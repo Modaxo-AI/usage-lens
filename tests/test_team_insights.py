@@ -126,7 +126,9 @@ class TestActiveDays(unittest.TestCase):
     def test_no_active_days_is_a_dash(self):
         rows = [week("a", "2026-09-14", "r1", 50.0, days=0)]
         res = run_js(F, f"out(perActiveDay({json.dumps(rows)}));")
-        self.assertEqual(res, [{"person": "a", "cost": 50.0, "days": 0, "perDay": None}])
+        # (P3 TO-1/TO-6: the row also carries the days' range and the per-day range.)
+        self.assertEqual([{k: r[k] for k in ("person", "cost", "days", "perDay")} for r in res],
+                         [{"person": "a", "cost": 50.0, "days": 0, "perDay": None}])
 
 
 class TestOutput(unittest.TestCase):
@@ -134,7 +136,10 @@ class TestOutput(unittest.TestCase):
         rows = [week("a", "2026-09-14", "r", 100.0, lines=900.0, removed=100.0, with_lines=60.0)]
         prs = [{"person": "a", "session_cost_usd": 30.0, "session_prs": 2},
                {"person": "a", "session_cost_usd": 30.0, "session_prs": 2}]
-        res = run_js(F, f"out(outputByPerson({json.dumps(rows)}, {json.dumps(prs)}));")["a"]
+        # The share of spend with line data is over the whole cost of the sessions that
+        # started in the weeks (P3 TM-1), passed as [person, week, cost].
+        costs = [["a", "2026-09-14", 100.0]]
+        res = run_js(F, f"out(outputByPerson({json.dumps(rows)}, {json.dumps(prs)}, {json.dumps(costs)}));")["a"]
         self.assertEqual(res["prs"], 2)
         self.assertAlmostEqual(res["costPerPr"], 15.0)
         self.assertEqual((res["linesAdded"], res["linesRemoved"]), (900, 100))

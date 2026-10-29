@@ -882,8 +882,11 @@ class TestSeatValue(unittest.TestCase):
     def test_rate_limit_tier_beats_seat_tier_beats_default(self):
         prices = {"per": "month", "prices": {"default": 1, "enterprise_tier_1": 2,
                                              "default_claude_max_5x": 3}}
-        person = {"rate_limit_tier": "default_claude_max_5x", "seat_tier": "enterprise_tier_1"}
+        person = {"rate_limit_tier": "default_claude_max_5x", "seat_tier": "team_standard"}
         self.assertEqual(team._seat_price(person, prices), 3)
+        # An Enterprise seat is priced by its seat tier (P3 SP-11: see test_p3_team.py).
+        enterprise = {"rate_limit_tier": "default_claude_max_5x", "seat_tier": "enterprise_tier_1"}
+        self.assertEqual(team._seat_price(enterprise, prices), 2)
         self.assertEqual(team._seat_price({"seat_tier": "enterprise_tier_1"}, prices), 2)
         self.assertEqual(team._seat_price({"seat_tier": "other"}, prices), 1)
         self.assertIsNone(team._seat_price({"seat_tier": "other"}, {"per": "month", "prices": {"x": 1}}))
@@ -3374,7 +3377,8 @@ class TestTeamPayloadForManagers(unittest.TestCase):
 
     def test_weekly_rows_carry_output_and_window_fields(self):
         for row in self.payload["weekly"]:
-            self.assertEqual(len(row), 18)
+            self.assertEqual(len(row), 19)  # 18: the machine's label (P3 TO-1)
+            self.assertIsInstance(row[18], str)
             self.assertTrue(row[10] is None or isinstance(row[10], float))
             self.assertTrue(row[11] is None or isinstance(row[11], float))
             self.assertIsInstance(row[12], float)

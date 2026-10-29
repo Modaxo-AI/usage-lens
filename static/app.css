@@ -447,6 +447,10 @@ table.data-table thead th[data-sort] { cursor: pointer; }
 table.data-table thead th[data-sort]:hover { color: var(--accent); }
 table.data-table th.sorted { color: var(--accent); }
 table.data-table th.sorted::after { content: " \25BE"; }
+table.data-table th.sorted-asc::after { content: " \25B4"; }
+table.data-table th[data-sort]:focus-visible, table.data-table tr.expandable:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
 /* Numeric headers follow their values. The markup has marked these `th`s
    `.num` since the first commit, but only `td.num` was ever right-aligned, so a
    header sat at the far left of a wide column with its numbers at the far

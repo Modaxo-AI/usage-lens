@@ -89,7 +89,24 @@ export zips/CSVs (one or more per person, from collect.py --export / Export (.zi
    transcript that holds its `uuid`, and a session row's `active_start` is its
    first record not copied from another transcript (`start` still shows the
    earliest record in the file). A derived (pure-copy) session holds only
-   copied records, so it usually reports an `active_ms` of 0.
+   copied records, so it reports an `active_ms` of 0: in a derived session a
+   record counts only if it has a `uuid` no earlier transcript holds, so its
+   `uuid`-less bookkeeping records (queue operations and the like) add no time.
+   A session that owns requests keeps its `uuid`-less records, which can't be
+   matched to a copy.
+4. **Tool calls, edits, skills and PRs.** The same copies repeat tool calls,
+   so each is counted once by its `tool_use_id`, for the first transcript in
+   request-ownership order that holds it. Each tool call also records the model
+   of the response that made it, so the model filter keeps the calls that model
+   made. A call the user refused (the result carries `toolDenialKind`) is a call
+   but not an error. **Lines changed** are counted per edit, from the diff in
+   each Edit/Write result, dated by the edit and credited to the session (a
+   subagent's edits to its parent); a session with no edit has none. A skill
+   counts when the Skill tool was called, and also when a slash command started
+   it (`/next-task`), if the name is a skill the logs show elsewhere. A **PR** is
+   attributed and dated by its earliest `pr-link`; each session lists every PR
+   it linked, except the links a continuation merely copied. A subagent
+   transcript copied under two parent sessions is one subagent.
 
 ## Project layout
 

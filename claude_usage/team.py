@@ -42,6 +42,7 @@ from . import context
 from .export import csv_safe
 
 KINDS = ("summary", "sessions", "breakdown", "limits", "prs", "tools")
+UNKNOWN_PROJECT = "(unknown project)"  # what the exporter writes for spend with no folder (aggregate.py)
 _NAME_RE = re.compile(r"^claude-usage-(summary|sessions|breakdown|limits|prs|tools)-(.+)-(\d{8})\.csv$")
 SEAT_PRICE_FILE = "seat-prices.json"
 # Zips come from colleagues, so a hostile or broken one must cost little and
@@ -471,9 +472,24 @@ def _zip_members(path, budget):
                 yield info.filename, stream
 
 
+class _Problems(list):
+    """The human-readable problem strings of a read, plus `skipped`: one
+    {"source", "person", "reason"} per export that was left out whole, so the
+    team page can list it next to the exports it merged."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.skipped = []
+
+
+_FIX = ("re-export it with the current tool (or save the CSVs as comma-separated UTF-8, not "
+        "semicolons or dates re-formatted by Excel)")
+
+
 def read_exports(paths):
     """Every export found under `paths` (files or folders). Returns
-    (exports, problems) where problems are human-readable strings.
+    (exports, problems) where problems are human-readable strings (and
+    `problems.skipped` lists the exports left out whole).
 
     An export with a file that can't be read, or fails the checks in
     _read_csv, is skipped whole, never half-merged. Files are parsed a line at
@@ -482,9 +498,10 @@ def read_exports(paths):
     file; one past a limit is skipped like any other bad file."""
     budget = _Budget()
     groups = {}
-    problems = []
+    problems = _Problems()
     rejected = {}           # loose CSVs' group key -> label, for a group with a bad file
     loose_files = Counter()  # loose CSVs' group key -> files seen
+    loose_reasons = defaultdict(list)  # loose CSVs' group key -> why each bad file was skipped
 
     def key_of(source, member):
         # Grouped by the file's full path and its folder inside a zip: two
@@ -548,18 +565,28 @@ def read_exports(paths):
                     add(loose, f"{folder} ({loose[2]}, {loose[3]})", kind, columns, rows)
             continue
         except _Unusable as exc:
-            problems.append(f"{label}: {exc}, skipped")
+            reason = f"{exc}"
             budget.left, budget.cells = before
         except _READ_ERRORS as exc:
-            problems.append(f"{label}: could not be read ({type(exc).__name__}: {exc}), skipped")
+            reason = f"could not be read ({type(exc).__name__}: {exc})"
             budget.left, budget.cells = before
         if loose:
+            # One notice per export, not one per file: a person's six Excel-saved
+            # CSVs are one problem. Reported after the loop, with the fix.
             rejected[loose] = f"{os.path.dirname(path) or '.'} ({loose[2]}, {loose[3]})"
+            loose_reasons[loose].append(f"{name}: {reason}")
+        else:
+            problems.append(f"{label}: {reason}, skipped. The export was left out of the merge: {_FIX}.")
+            problems.skipped.append({"source": label, "person": os.path.splitext(name)[0], "reason": reason})
     for key, label in rejected.items():
         groups.pop(key, None)
-        if loose_files[key] > 1:
-            problems.append(f"{label}: the export's other files were skipped too, so it isn't "
-                            "half-merged")
+        reasons = loose_reasons[key]
+        more = f" ({len(reasons) - 1} more of its files failed too)" if len(reasons) > 1 else ""
+        other = loose_files[key] - len(reasons)
+        rest = f"; its {other} other file(s) were left out with it so it isn't half-merged" if other > 0 else ""
+        problems.append(f"{label}: skipped. {reasons[0]}{more}{rest}. The whole export was left out of the "
+                        f"merge, so {key[2]} is missing from the team views: {_FIX}.")
+        problems.skipped.append({"source": label, "person": key[2], "reason": reasons[0]})
     return list(groups.values()), problems
 
 
@@ -584,7 +611,10 @@ def load_seat_prices(paths, explicit=None):
     (Example prices; use your own.)
 
     A person is priced by their rate-limit tier, then their seat tier, then
-    "default" -- the rate-limit tier is the more specific of the two.
+    "default" -- the rate-limit tier is the more specific of the two. An
+    Enterprise seat (a seat tier named enterprise_*) is the exception: its
+    seat tier comes first, since the rate-limit tier that rides along with it
+    (a consumer Max tier) is not what the organisation pays for.
     """
     candidates = [explicit] if explicit else list(dict.fromkeys(
         os.path.join(p if os.path.isdir(p) else os.path.dirname(os.path.abspath(p)), SEAT_PRICE_FILE)
@@ -603,6 +633,12 @@ def load_seat_prices(paths, explicit=None):
             # `true` would read as $1, and a 401-digit int overflows float().
             if any(isinstance(v, bool) for v in (raw.get("prices") or {}).values()):
                 raise ValueError('"prices" must map tiers to numbers, not true/false')
+            # Usage is priced in USD, so a price in anything else would be divided
+            # into dollars as if it were one: refused, not converted (no rate to trust).
+            currency = raw.get("currency", "USD")
+            if not isinstance(currency, str) or currency.strip().upper() != "USD":
+                raise ValueError(f"prices must be in USD, the currency usage is priced in; the file says "
+                                 f"{currency!r}. Convert them to USD and set \"currency\": \"USD\"")
             prices = {str(k): float(v) for k, v in (raw.get("prices") or {}).items()}
             # Zero is rejected too: it is what the documented template ships
             # with, and an unedited template must not yield a value multiple. So
@@ -610,7 +646,7 @@ def load_seat_prices(paths, explicit=None):
             if not prices or any(not (math.isfinite(v) and v >= 0.01) for v in prices.values()):
                 raise ValueError('"prices" must map tiers to numbers of at least 0.01 -- '
                                  'replace the template\'s zeros with real prices')
-            return {"currency": raw.get("currency", "USD"), "per": per, "prices": prices,
+            return {"currency": "USD", "per": per, "prices": prices,
                     "source": os.path.basename(path)}, []
         except (OSError, ValueError, TypeError, AttributeError, OverflowError) as exc:
             return None, [f"{os.path.basename(path)}: could not be used ({exc})"]
@@ -620,7 +656,11 @@ def load_seat_prices(paths, explicit=None):
 def _seat_price(person, prices):
     if not prices:
         return None
-    for key in (person.get("rate_limit_tier"), person.get("seat_tier"), "default"):
+    seat = person.get("seat_tier")
+    keys = [person.get("rate_limit_tier"), seat, "default"]
+    if seat and str(seat).startswith("enterprise") and seat in prices["prices"]:
+        keys = [seat] + keys
+    for key in keys:
         if key and key in prices["prices"]:
             return prices["prices"][key]
     return None
@@ -1284,6 +1324,76 @@ def _sum_cells(values):
     return repr(round(sum(_num(v) for v in present), 6))
 
 
+# Columns that older schemas don't have (blank there, meaning "not measured", not
+# zero): schema 7's usage health, 9's imputed tokens and 10's very-long-context
+# cost. Summing a week's pieces when one piece lacks them would pass the other's
+# figure for the whole week, next to costs that cover both.
+_GATED = frozenset((
+    "long_context_cost_usd", "cold_cache_usd", "cache_miss_usd", "prompts", "interrupts",
+    "auto_compactions", "manual_compactions", "tool_refusals", "error_streaks", "test_runs",
+    "lint_runs", "build_runs", "commits", "sessions_edited", "sessions_checked_after_edit",
+    "sessions_plan_mode", "sessions_with_subagents", "sessions_instructions_recorded",
+    "sessions_with_project_claude_md", "output_tokens_imputed", "est_cost_unlogged_usd",
+    "very_long_context_cost_usd"))
+
+
+def _has_measures(row):
+    """Whether a summary row holds any usage at all (a cost, requests, tokens or
+    sessions), rather than being the empty row a quiet week gets."""
+    return any(_num(row.get(c)) for c in ("est_cost_usd", "requests", "total_tokens",
+                                          "sessions_started", "sessions_active", "output_tokens",
+                                          "tool_calls", "prs_opened"))
+
+
+def _unify_week_pieces(picked, candidates):
+    """A week exported in pieces (to Wednesday, then from Thursday) by one
+    machine: rows with the same project are added up by `_combine_week_rows`, but
+    a project only one piece has keeps that piece's `week_active_days`, and the
+    page reads a week's days from any of its rows. The days belong to the week,
+    not the project: the pieces cover different days, so the week's distinct
+    days are the pieces' added up (blank if any piece lacks them), and the days
+    of the week in the window are the pieces' windows together. Set the same on
+    every row of the person's machine and week."""
+    pieces = defaultdict(lambda: defaultdict(list))  # (person, machine, week) -> {id(export): [days]}
+    owner = {}
+    for key, options in candidates.items():
+        for _rank, e, row in options:
+            raw = row.get("week_active_days")
+            owner[id(e)] = e
+            pieces[key[:3]][id(e)].append(None if raw in (None, "") else int(_num(raw)))
+    pieces = {wk: {i: (owner[i], None if None in vals else max(vals)) for i, vals in slot.items()}
+              for wk, slot in pieces.items()}
+    fixed = {}
+    for week_key, slot in pieces.items():
+        if len(slot) < 2:
+            continue
+        exports = [e for e, _ in slot.values()]
+        counts = [d for _, d in slot.values()]
+        active = "" if None in counts else str(sum(counts))
+        windows = [_window(e) for e in exports]
+        covered = set()
+        for window in windows:
+            covered |= _days_of(week_key[2], window)
+        known = all(all(w) for w in windows)
+        fixed[week_key] = (active, len(covered) if known else None)
+    if not fixed:
+        return picked
+    out = {}
+    for key, value in picked.items():
+        change = fixed.get(key[:3])
+        if change is None:
+            out[key] = value
+            continue
+        rank, e, row = value
+        row = dict(row)
+        row["week_active_days"] = change[0]
+        if change[1] is not None:
+            row["week_days_in_window"] = str(change[1])
+            row["partial_week"] = "yes" if change[1] < 7 else "no"
+        out[key] = (rank, e, row)
+    return out
+
+
 def _combine_week_rows(kind, rows):
     """One row from the rows several exports hold for the same week and key,
     each covering different days of that week. Measures add up; the rest comes
@@ -1293,6 +1403,8 @@ def _combine_week_rows(kind, rows):
     out = dict(rows[0])
     for c in _SUMMED[kind]:
         out[c] = _sum_cells([r.get(c) for r in rows])
+        if kind == "summary" and c in _GATED and any(r.get(c) in (None, "") for r in rows):
+            out[c] = ""
     if kind == "summary":
         cost, sub = _num(out["est_cost_usd"]), _num(out["est_cost_subagent_usd"])
         out["subagent_cost_share"] = repr(round(sub / cost, 4)) if cost else ""
@@ -1519,12 +1631,17 @@ def _choose_for_week(week, rows_by_export, left_out=None):
     return chosen, lost, dropped
 
 
-def merge(exports, problems=(), prices=None):
+def merge(exports, problems=(), prices=None, skipped=None, prices_rejected=False):
     """Combine exports into one de-duplicated set.
 
     Returns {"files": {kind: (columns, rows)}, "people": [...], "sources": [...],
-             "warnings": [{"level", "message"}]}.
+             "skipped": [...], "warnings": [{"level", "message"}]}.
+    `skipped` lists the exports read_exports left out whole (default: the
+    `skipped` of `problems`); `prices_rejected` says a seat-prices file was
+    found and refused (its problem is already among `problems`).
     """
+    if skipped is None:
+        skipped = getattr(problems, "skipped", [])
     warnings = [{"level": "warn", "message": p} for p in problems]
     keys = _person_keys(exports)
     machines, machine_notes = _machine_groups(exports, keys)
@@ -1543,18 +1660,23 @@ def merge(exports, problems=(), prices=None):
             "misread -- update this tool to read them correctly."})
     if len(versions) > 1 and min(versions) < current:
         oldest = min(versions)
-        stale = defaultdict(list)
+        # Each version's people, so "ask people on version 6" doesn't also name
+        # the ones on 9 or 11.
+        stale = defaultdict(lambda: defaultdict(list))
         for e in sorted(exports, key=lambda e: e.source):
             if e.schema_version < current:
-                stale[keys[id(e)]].append(e.source)
-        named = [f"{person} ({', '.join(files[:3] + ([f'+{len(files) - 3} more files'] if len(files) > 3 else []))})"
-                 for person, files in sorted(stale.items())]
-        if len(named) > 5:
-            named = named[:5] + [f"{len(named) - 5} more people"]
+                stale[e.schema_version][keys[id(e)]].append(e.source)
+        parts = []
+        for version, by_person_files in sorted(stale.items()):
+            named = [f"{person} ({', '.join(files[:3] + ([f'+{len(files) - 3} more files'] if len(files) > 3 else []))})"
+                     for person, files in sorted(by_person_files.items())]
+            if len(named) > 5:
+                named = named[:5] + [f"{len(named) - 5} more people"]
+            parts.append(f"ask people on version {version} to re-export: {'; '.join(named)}")
         warnings.append({"level": "warn", "message":
             f"Exports use schema versions {', '.join(map(str, sorted(versions)))}. Columns an older "
-            f"file doesn't have are blank -- ask people on version {oldest} to re-export with the "
-            f"current tool for complete data: {'; '.join(named)}."
+            f"file doesn't have are blank -- with the current tool the data is complete. "
+            f"{'. '.join(p[0].upper() + p[1:] for p in parts)}."
             + (" Version 8 also changed how days and weeks are bucketed (in an export zone, UTC "
                "by default, not the machine's), so older exports put work near a week's edge in "
                "different weeks than newer ones and should be re-exported." if oldest < 8 else "")})
@@ -1752,10 +1874,14 @@ def merge(exports, problems=(), prices=None):
                     picked[key] = (None, options[0][1], _combine_week_rows(kind, [o[2] for o in options]))
                     sources[key] = "; ".join(o[1].source for o in options)
             if kind == "summary":
+                picked = _unify_week_pieces(picked, candidates)
                 # A quiet week's empty row from one export, next to another's
-                # work in the same week, is not a week of its own.
+                # work in the same week, is not a week of its own. A row with no
+                # project that holds anything (cost, requests, tokens) is work,
+                # not an empty row, whatever else the week has.
                 busy = {key[:3] for key in picked if key[3]}
-                picked = {key: v for key, v in picked.items() if key[3] or key[:3] not in busy}
+                picked = {key: v for key, v in picked.items()
+                          if key[3] or key[:3] not in busy or _has_measures(v[2])}
         else:
             picked = {key: max(options, key=lambda o: o[0]) for key, options in candidates.items()}
 
@@ -1787,6 +1913,10 @@ def merge(exports, problems=(), prices=None):
             out = {c: row.get(c, "") for c in columns}
             out["person"] = keys[id(e)]
             out["merged_from"] = sources.get(key, e.source)
+            if kind in _PER_MACHINE:
+                # Not a column of the CSV: which machine's row this is, so the
+                # page can tell two machines' days of a week from one's.
+                out["_machine"] = machines[id(e)]
             rows.append(out)
             kept.append((e, row))
         files[kind] = (columns, rows, kept)
@@ -1813,15 +1943,40 @@ def merge(exports, problems=(), prices=None):
     people = _people(keys, machines, by_person, files)
     apply_seat_value(people, prices)
     if exports and not prices:
-        warnings.append({"level": "info", "message":
-            f"No {SEAT_PRICE_FILE} found, so value per seat is blank. Add one next to the exports "
-            "with your seat price per tier (see docs/team.md)."})
+        if prices_rejected:
+            warnings.append({"level": "info", "message":
+                f"Value per seat is blank until the {SEAT_PRICE_FILE} problem above is fixed."})
+        else:
+            warnings.append({"level": "info", "message":
+                f"No {SEAT_PRICE_FILE} found, so value per seat is blank. Add one next to the exports "
+                "with your seat price per tier (see docs/team.md)."})
     elif prices:
         unpriced = [p for p in people if p["seat_price"] is None]
         if unpriced:
+            tiers = sorted({tierid for p in unpriced
+                            for tierid in (p.get("rate_limit_tier"), p.get("seat_tier")) if tierid})
             warnings.append({"level": "warn", "message":
-                f"Value per seat is blank for {_named(unpriced)}: their tier has no price in "
-                f"{prices['source']}, and there is no \"default\"."})
+                f"Value per seat is blank for {_named(unpriced)}: "
+                + (f"their tier ({', '.join(tiers)}) has no price" if tiers else "they have no recorded tier")
+                + f" in {prices['source']}, and there is no \"default\". Add a price for "
+                + (", ".join(f'"{t}"' for t in tiers) if tiers else '"default"') + "."})
+    for p in people:
+        gaps = p.get("gaps") or []
+        if gaps:
+            spans = "; ".join(f"{a} .. {b}" for a, b in gaps)
+            warnings.append({"level": "info", "message":
+                f"{p['display_name']} ({p['person']}): their exports leave out {spans} "
+                f"({p['gap_days']} day(s) between them). Nothing is known about those days: they aren't "
+                "counted as idle or paid for in the seat figures. Re-export with a window that "
+                "reaches across them to fill them."})
+        if p.get("no_usage_window"):
+            warnings.append({"level": "warn", "message":
+                f"{p['display_name']} ({p['person']}): the export holds no usage and covers only "
+                f"{p['window_from']} .. {p['window_to']} ({p['window_days']} day(s)), so earlier weeks show "
+                "as not covered and the seat can only be called idle for those days. Claude Code deletes "
+                "transcripts after 30 days, or its logs aren't on that machine. Re-export with "
+                "`python3 collect.py --export --since YYYY-MM-DD` (the first day you want covered), or "
+                "from the machine that has the logs."})
     truncated = [p for p in people if p.get("cli_history_truncated") == "yes"]
     if truncated:
         warnings.append({"level": "info", "message":
@@ -1841,6 +1996,7 @@ def merge(exports, problems=(), prices=None):
         "files": {k: (cols, rows) for k, (cols, rows, _) in files.items()},
         "people": people,
         "sources": sources,
+        "skipped": list(skipped),
         "warnings": warnings,
         "prices": prices,
     }
@@ -1854,11 +2010,11 @@ _PERSON_CONTEXT = (
 )
 
 
-def _covered_days(windows):
-    """How many days the (since, until) `windows` cover between them: overlapping
-    or touching ones count once, and the days between two don't count. A window
-    that is missing a date, or ends before it starts, covers nothing (the
-    dashboard's `coverageIntervals` skips such a window too)."""
+def _covered_spans(windows):
+    """The stretches the (since, until) `windows` cover between them, as sorted
+    (first, last) dates: overlapping or touching windows are one stretch. A
+    window that is missing a date, or ends before it starts, covers nothing
+    (the dashboard's `coverageIntervals` skips such a window too)."""
     spans = []
     for since, until in windows:
         try:
@@ -1867,14 +2023,20 @@ def _covered_days(windows):
             continue
         if first <= last:
             spans.append((first, last))
-    total, reached = 0, None
+    merged = []
     for first, last in sorted(spans):
-        if reached is not None and last <= reached:
-            continue
-        total += (last - first).days + 1 if reached is None or first > reached \
-            else (last - reached).days
-        reached = last
-    return total
+        if merged and first <= merged[-1][1] + _dt.timedelta(days=1):
+            if last > merged[-1][1]:
+                merged[-1] = (merged[-1][0], last)
+        else:
+            merged.append((first, last))
+    return merged
+
+
+def _covered_days(windows):
+    """How many days the (since, until) `windows` cover between them: overlapping
+    or touching ones count once, and the days between two don't count."""
+    return sum((last - first).days + 1 for first, last in _covered_spans(windows))
 
 
 def _window_days(e):
@@ -2003,9 +2165,18 @@ def _people(keys, machines, by_person, files):
         row.update(_activity(by_machine))
         row["window_from"] = min((w for w in (_window(e)[0] for e in group) if w), default=None)
         row["window_to"] = max((w for w in (_window(e)[1] for e in group) if w), default=None)
-        row["window_days"] = _covered_days(_window(e) for e in group)
+        spans = _covered_spans(_window(e) for e in group)
+        row["window_days"] = sum((last - first).days + 1 for first, last in spans)
+        row["windows"] = [[a.isoformat(), b.isoformat()] for a, b in spans]
+        # The days between two stretches: in no export, so neither idle nor paid for.
+        row["gaps"] = [[(a[1] + _dt.timedelta(days=1)).isoformat(), (b[0] - _dt.timedelta(days=1)).isoformat()]
+                       for a, b in zip(spans, spans[1:])]
+        row["gap_days"] = sum((b[0] - a[1]).days - 1 for a, b in zip(spans, spans[1:]))
         row["exports"] = len(group)
         row["machines"] = len(by_machine)
+        # Two machines' active days can't be told from the same days: the figure
+        # is the busier machine's, so seat use is a floor.
+        row["seat_use_is_floor"] = "yes" if len(by_machine) > 1 else "no"
         row["latest_export_at"] = newest.exported_at
         row["schema_version"] = newest.schema_version
         active, workdays = _num(row.get("person_active_days"), None), _num(row.get("window_workdays"), None)
@@ -2028,6 +2199,14 @@ def _people(keys, machines, by_person, files):
             "extra_usage_usd": round(t.get("extra_usage_usd", 0.0), 2),
         })
         row["display_name"] = display_name(person, row.get("person_name"))
+        # An export from a machine with no logs holds nothing and covers only the
+        # short default window (30 days from schema 13; a single day before it):
+        # what the person did earlier isn't there, so the seat is idle only for
+        # that stretch and the weeks before it are not covered.
+        row["no_usage_window"] = bool(
+            row["window_days"] <= getattr(context, "NO_LOGS_WINDOW_DAYS", 30)
+            and not cost and not row.get("requests")
+            and not row.get("person_active_days") and not row.get("last_active_date"))
         people.append(row)
     _unique_display_names(people)
     return people
@@ -2036,8 +2215,8 @@ def _people(keys, machines, by_person, files):
 PEOPLE_COLUMNS = [
     "person", "person_name", "claude_account_email", "person_email", "seat_tier",
     "rate_limit_tier", "extra_usage_enabled", "exports", "latest_export_at", "schema_version",
-    "tool_version", "window_from", "window_to", "person_active_days", "window_workdays",
-    "seat_use", "last_active_date", "seat_idle", "cli_history_from", "cli_history_truncated",
+    "tool_version", "window_from", "window_to", "window_days", "gap_days", "person_active_days",
+    "window_workdays", "seat_use", "seat_use_is_floor", "last_active_date", "seat_idle", "cli_history_from", "cli_history_truncated",
     "sessions", "requests", "est_cost_usd", "subagent_cost_share", "total_tokens",
     "output_tokens", "thinking_tokens", "api_retries", "limit_hits", "lockouts",
     "locked_out_hours", "extra_usage_usd", "allowance_est_usd", "allowance_week_used_pct",
@@ -2055,15 +2234,31 @@ def _monday(day):
     return (d - _dt.timedelta(days=d.weekday())).isoformat()
 
 
+def _covered_weeks(merged):
+    """The Mondays of the weeks any export's window touches: the dashboard's
+    rule (`coveredWeek`), so a week in a gap between exports, or before the
+    first one, is unknown rather than a week with no extra usage."""
+    windows = merged.get("sources") or merged["people"]
+    spans = _covered_spans((s.get("window_from"), s.get("window_to")) for s in windows)
+    weeks = set()
+    for first, last in spans:
+        w = _dt.date.fromisoformat(_monday(first.isoformat()))
+        while w <= last:
+            weeks.add(w)
+            w += _dt.timedelta(days=7)
+    return weeks
+
+
 def overage_forecast(merged, today=None, basis_weeks=4):
     """Extra-usage spend per week, and a straight projection from the recent
     average. Deliberately simple and stated: weekly overage is spiky (it only
     happens in weeks someone hits the limit), so the projection is a run-rate,
     not a prediction, and comes with the weeks it was computed from.
 
-    Only weeks the exports cover count: a week after the newest export's
-    window is unknown, not $0, and the week an export ends in is shown but not
-    averaged unless the window reaches its Sunday."""
+    Only weeks the exports cover count, as on the dashboard: a week no export's
+    window touches (after the newest export, before the first, or in a gap
+    between two) is unknown, not $0, and is left out; the week an export ends
+    in is shown but not averaged unless the window reaches its Sunday."""
     today = today or _dt.date.today()
     limits = (merged["files"].get("limits") or ([], []))[1]
     weekly = defaultdict(float)
@@ -2077,10 +2272,12 @@ def overage_forecast(merged, today=None, basis_weeks=4):
     covered_to = min(_dt.date.fromisoformat(max(ends)), today) if ends else today
     first = _dt.date.fromisoformat(_monday(min(starts)))
     last = _dt.date.fromisoformat(_monday(covered_to.isoformat()))
+    seen = _covered_weeks(merged)
     weeks = []
     w = first
     while w <= last:
-        weeks.append(w)
+        if w in seen:
+            weeks.append(w)
         w += _dt.timedelta(days=7)
     series = [[w.isoformat(), round(weekly.get(w.isoformat(), 0.0), 2)] for w in weeks]
     complete = [(w, v) for w, (_, v) in zip(weeks, series)
@@ -2094,6 +2291,10 @@ def overage_forecast(merged, today=None, basis_weeks=4):
                    if row.get("limit_type") == "weekly" and row.get("hit_at")
                    and _num(row.get("usage_after_hit_usd")) > 0
                    and _monday(row["hit_at"]) in basis_starts)
+    # A snapshot of the allowance describes the week of the export, so it says
+    # something about this week only for people whose export ends in it.
+    this_week = _monday(today.isoformat())
+    current = [p for p in merged["people"] if p.get("window_to") and _monday(p["window_to"]) == this_week]
     return {
         "weekly": series,
         "basis_weeks": len(basis),
@@ -2101,8 +2302,8 @@ def overage_forecast(merged, today=None, basis_weeks=4):
         "weekly_run_rate_usd": round(rate, 2),
         "next_4_weeks_usd": round(rate * 4, 2),
         "next_13_weeks_usd": round(rate * 13, 2),
-        "people_on_pace_to_hit": [p["person"] for p in merged["people"]
-                                  if p.get("allowance_status") in ("on_pace_to_hit", "over")],
+        "people_on_pace_to_hit": [p["person"] for p in current if p.get("allowance_status") == "on_pace_to_hit"],
+        "people_over": [p["person"] for p in current if p.get("allowance_status") == "over"],
     }
 
 
@@ -2123,7 +2324,8 @@ _HEALTH_TEAM_COLUMNS = (
 def _load(paths, seat_prices=None):
     exports, problems = read_exports(paths)
     prices, price_problems = load_seat_prices(paths, seat_prices)
-    return merge(exports, list(problems) + price_problems, prices)
+    return merge(exports, list(problems) + price_problems, prices, skipped=problems.skipped,
+                 prices_rejected=bool(price_problems))
 
 
 def team_payload(paths, today=None, seat_prices=None):
@@ -2138,7 +2340,21 @@ def team_payload(paths, today=None, seat_prices=None):
         """A number, or None for a blank cell: blank is "not recorded"."""
         return None if value in (None, "") else _num(value)
 
-    weekly = [[r["person"], r.get("week_start"), r.get("project_repo") or r.get("project") or "",
+    names = {p["person"]: p.get("display_name") or p["person"] for p in merged["people"]}
+
+    def repo_of(r):
+        """The repository a row is spend in: the folder's git remote. A folder that
+        isn't a git repo has only its own path (`~/work/app`), which two people can
+        both have for unrelated folders, so it is named with whose it is."""
+        repo = r.get("project_repo")
+        if repo:
+            return repo
+        project = r.get("project") or ""
+        if not project or project == UNKNOWN_PROJECT:
+            return project
+        return f"{project} (folder, {names.get(r['person'], r['person'])})"
+
+    weekly = [[r["person"], r.get("week_start"), repo_of(r),
                _num(r.get("est_cost_usd")), _num(r.get("total_tokens")), _num(r.get("requests")),
                _num(r.get("sessions_active")), _num(r.get("active_days")),
                r.get("partial_week") == "yes", r.get("cli_history_complete") == "no",
@@ -2146,8 +2362,19 @@ def team_payload(paths, today=None, seat_prices=None):
                _num(r.get("cost_with_line_data_usd")), _num(r.get("sessions_started")),
                maybe(r.get("week_days_in_window")),
                _num(r.get("est_cost_subagent_usd")), _num(r.get("api_retries")),
-               maybe(r.get("week_active_days"))]
+               maybe(r.get("week_active_days")), r.get("_machine") or ""]
               for r in rows("summary")]
+    # What the sessions that started in each week cost in all: the whole of each
+    # session, so it is what `cost_with_line_data_usd` (also whole sessions) is a
+    # share of. The week's own cost counts requests by their day, so it isn't.
+    started_cost = defaultdict(float)
+    for r in rows("sessions"):
+        day = (r.get("started_at") or "")[:10]
+        try:
+            started_cost[(r["person"], _monday(day))] += _num(r.get("est_cost_usd"))
+        except ValueError:
+            continue
+    session_costs = [[person, week, round(cost, 6)] for (person, week), cost in sorted(started_cost.items())]
     models = [[r["person"], r.get("week_start"), r.get("model_family") or "other", r.get("thread") or "main",
                _num(r.get("est_cost_usd")), _num(r.get("output_tokens")), _num(r.get("thinking_tokens")),
                r.get("model") or ""]
@@ -2162,7 +2389,8 @@ def team_payload(paths, today=None, seat_prices=None):
         "person": r["person"], "pr_url": r.get("pr_url"), "pr_repo": r.get("pr_repo") or "",
         "opened_on": r.get("opened_on"), "session_id": r.get("session_id"),
         "in_project_repo": r.get("in_project_repo") or "",
-        "session_cost_usd": _num(r.get("session_cost_usd")),
+        # Blank is "not recorded", not a free session.
+        "session_cost_usd": maybe(r.get("session_cost_usd")),
         "session_prs": _num(r.get("session_prs"), 1.0) or 1.0,
     } for r in rows("prs")]
     # Only rows from exports that carry the schema-7 health columns: an older
@@ -2181,6 +2409,8 @@ def team_payload(paths, today=None, seat_prices=None):
         "sources": merged["sources"],
         "warnings": merged["warnings"],
         "weekly": weekly,
+        "session_costs": session_costs,
+        "skipped": merged.get("skipped") or [],
         "models": models,
         "limits": limits,
         "prs": prs,
@@ -2201,17 +2431,17 @@ def _csv_text(columns, rows):
     return buf.getvalue()
 
 
-def merged_files(merged):
+def merged_files(merged, today=None):
     """{filename: csv text} for every merged output, plus the report."""
     out = {}
     for kind, (columns, rows) in merged["files"].items():
         out[f"team-{kind}.csv"] = _csv_text(columns, rows)
     out["team-people.csv"] = _csv_text(PEOPLE_COLUMNS, merged["people"])
-    out["merge-report.txt"] = report_text(merged)
+    out["merge-report.txt"] = report_text(merged, today)
     return out
 
 
-def report_text(merged):
+def report_text(merged, today=None):
     lines = ["Claude Code usage -- team merge report", ""]
     lines.append(f"{len(merged['people'])} people from {len(merged['sources'])} export(s)")
     lines.append("")
@@ -2220,7 +2450,7 @@ def report_text(merged):
                      f"exported {s['exported_at']}, window {s['window_from']} .. {s['window_to']}, "
                      f"files: {', '.join(s['files'])})")
     lines.append("")
-    forecast = overage_forecast(merged)
+    forecast = overage_forecast(merged, today)
     if forecast:
         # One episode (or none) is too little to project: a single spike would
         # read as a steady weekly cost.
@@ -2239,13 +2469,21 @@ def report_text(merged):
         else:
             lines.append("No extra usage so far: too little to project a run-rate. "
                          "(Extra usage only happens in weeks someone runs out of allowance.)")
+        # Only people whose export ends in the current week: an older snapshot
+        # says nothing about this week. Over and on pace are different news.
+        by_person = {p["person"]: p for p in merged["people"]}
+
+        def as_of(people):
+            return ", ".join(f"{who} (as of their export, {by_person[who]['latest_export_at'][:10]})"
+                             for who in people)
+        if forecast["people_over"]:
+            lines.append("Already over the weekly limit this week: " + as_of(forecast["people_over"]))
         if forecast["people_on_pace_to_hit"]:
-            lines.append("On pace to hit the weekly limit this week: "
-                         + ", ".join(forecast["people_on_pace_to_hit"]))
+            lines.append("On pace to hit the weekly limit this week: " + as_of(forecast["people_on_pace_to_hit"]))
         lines.append("")
     valued = [p for p in merged["people"] if p.get("value_multiple") is not None]
     if valued:
-        lines.append(f"Value per seat ({merged['prices']['source']}): list-price usage / "
+        lines.append(f"Value per seat ({merged['prices']['source']}, USD): list-price usage / "
                      "(seat cost + extra usage) over the days each person's exports cover")
         for p in sorted(valued, key=lambda p: -p["value_multiple"]):
             lines.append(f"  {p['person']}: {p['value_multiple']:.2f}x "
@@ -2257,7 +2495,9 @@ def report_text(merged):
         for w in merged["warnings"]:
             lines.append(f"  [{w['level']}] {w['message']}")
     else:
-        lines.append("Notes: none -- every export was current, and nothing overlapped.")
+        # No claim that exports are current: how old they are depends on the day
+        # this is read, which the files can't say. The dashboard's "How current" does.
+        lines.append("Notes: none.")
     return "\n".join(lines) + "\n"
 
 

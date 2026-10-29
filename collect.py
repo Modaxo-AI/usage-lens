@@ -13,7 +13,7 @@ import copy
 import json
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from claude_usage import context as context_mod
@@ -62,6 +62,10 @@ def _redact(payload: dict) -> dict:
     repos = {}
 
     def branch_alias(name):
+        # git records HEAD for a detached checkout: it is no branch name and
+        # names nothing, so it stays, and the dashboard can still say "detached".
+        if name == "HEAD":
+            return name
         return branches.setdefault(name, f"branch-{len(branches) + 1}")
 
     def repo_alias(name):
@@ -85,7 +89,22 @@ def _redact(payload: dict) -> dict:
     dims = payload.get("dims") or {}
     if "projects" in dims:
         dims["projects"] = sorted({alias.get(p, "(project)") for p in dims["projects"]})
+    # The build time carries this machine's UTC offset, which says where the
+    # person is; the same instant in UTC says nothing.
+    payload["generated_at"] = _utc_instant(payload.get("generated_at"))
     return payload
+
+
+def _utc_instant(value):
+    """An ISO timestamp as the same instant in UTC ("...Z"), so it no longer
+    shows the zone it was written in; anything unreadable is returned as is."""
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        return value
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _without_folder_in_keys(payload: dict) -> dict:

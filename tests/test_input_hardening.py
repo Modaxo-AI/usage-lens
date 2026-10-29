@@ -636,7 +636,8 @@ class TestIntegersStayIntegers(_QuietScanned):
         self.assertIs(type(session["cli_models"][0]["cli_tokens"]), int)
         self.assertEqual(session["cli_models"][0]["cli_tokens"], 30)
         self.assertIs(type(payload["reconciliation"][0]["cli_tokens"]), int)
-        self.assertEqual(session["lines_added"], 3)
+        # Lines changed come from edits (P3), not from the counter's totals.
+        self.assertIsNone(session["lines_added"])
         self.assertEqual(len(payload["friction"]), 3)
         for row in payload["friction"]:
             self.assertIs(type(row[3]), int, row)
@@ -660,7 +661,8 @@ class TestIntegersStayIntegers(_QuietScanned):
         facts.cost_states[0]["totalLinesAdded"] = -5  # as a hand-edited cache could hold it
         payload = aggregate.build_payload({"s1": {"facts": facts, "folder": "proj"}}, [],
                                           "2026-01-02T00:00:00+00:00")
-        self.assertEqual(payload["sessions"][0]["lines_added"], 0)
+        # The counter's line totals are no longer shown; the session made no edit.
+        self.assertIsNone(payload["sessions"][0]["lines_added"])
 
     def _path(self, *records):
         self.write([_good(), *records])
@@ -678,7 +680,7 @@ class TestSkillCallWithoutATimestamp(_QuietScanned):
         payload = self.scan()
         row, = payload["skillCalls"]
         self.assertEqual(row[0], aggregate._local_bucket(_TS))
-        self.assertEqual(row[2:], ["dataviz", 1])
+        self.assertEqual(row[2:], ["dataviz", 1, "claude-sonnet-5", "tool"])
         tool_row, = payload["tools"]
         self.assertEqual(tool_row[0], row[0])
 

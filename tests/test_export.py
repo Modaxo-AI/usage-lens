@@ -634,11 +634,13 @@ class TestSchema2(unittest.TestCase):
                  "limits": [], "prs": [], "agents": []}
         ctx = export_mod.build_context(empty, PERSON, now=self.NOW)
         self.assertEqual(ctx["seat_idle"], "yes")
-        self.assertEqual((ctx["window_from"], ctx["window_to"]), ("2026-02-08", "2026-02-08"))
+        # An export with no logs covers the last 30 days (SP-2), not one day.
+        self.assertEqual((ctx["window_from"], ctx["window_to"]), ("2026-01-10", "2026-02-08"))
         self.assertEqual(ctx["person_active_days"], 0)
         rows = _as_dicts(export_mod.SUMMARY_COLUMNS,
                          export_mod.summary_rows(empty, PERSON, ctx=ctx))
-        self.assertEqual([r["week_start"] for r in rows], ["2026-02-02"])
+        self.assertEqual([r["week_start"] for r in rows],
+                         ["2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26", "2026-02-02"])
         self.assertEqual(rows[0]["seat_idle"], "yes")
 
     def test_weeks_before_deleted_cli_history_are_marked_incomplete(self):

@@ -1,7 +1,7 @@
 {
   "name": "usage-lens",
   "displayName": "Usage Lens",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "A local dashboard for Claude Code usage and cost: tokens, cache hit rate, spend by model and project, with team roll-ups. Runs on your machine; nothing is uploaded.",
   "author": {
     "name": "Modaxo",

@@ -52,6 +52,20 @@ Provider surcharges are not modelled: Bedrock and Vertex requests are priced at
 Anthropic's list rates, and the 1.1× for US-only inference (`inference_geo`)
 isn't applied.
 
+### Cache writes: when the two fields disagree
+
+A response's usage can state cache writes in two ways: a flat
+`cache_creation_input_tokens` total, and a `cache_creation` block split into
+`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`. They normally agree.
+Where both are present and they don't (one real response logged a flat total of
+631,768 beside a 1-hour figure of 883,102), **the 5-minute/1-hour split is
+authoritative**: the two lifetimes are billed at different rates, so only the
+split can be priced, and it is what the cost, the token columns, the cache-saving
+figure and the cache-miss estimate all use. The flat total is read only when the
+response has no split at all, and is then priced as 5-minute writes. Nothing
+reconciles the two when they differ; the split simply wins, so a response like
+the one above is priced on 883,102 tokens, not 631,768.
+
 ## Pricing over time
 
 Cost is never stored. The parse cache keeps token counts only, and every scan
@@ -186,6 +200,16 @@ The panel has three groups of columns:
 
 In the payload, `cli_repriced` is that figure, on each `cli_models` row and each
 `reconciliation` row; `est_cost` and `est_tokens` are the window's figures.
+
+**The Sessions tab's divergence badge** (`cost_diverges`, shown when the two differ
+by more than 15%) is computed the same way: the counter's `totalCostUSD` against
+the estimate over *the counter's own window*, not the whole session. A counter
+restarted at a resume only saw part of the session, so comparing it with the whole
+made most badges artefacts. A counter whose highest `totalCostUSD` is 0 on a session
+that made requests is an empty one written when the session was reopened: it
+measured nothing, so it is treated as no counter at all (no CLI cost, no badge, no
+"not in transcripts" figure) rather than shown as "CLI $0.00". Lines changed are not
+taken from the counter at all; see [How it works](how-it-works.md).
 
 How to read the Δ:
 

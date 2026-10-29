@@ -348,7 +348,7 @@ class TestHeatmapDays(unittest.TestCase):
                   ["a@x.com", "2026-09-14", "r2", 5, 0, 1, 1, 5, False, False, None, None, 0, 1, 7]]
         html = run_js(TEAM, _setup(people=PEOPLE, weekly=weekly) +
                       "state.metric = 'days'; renderHeatmap(); out(el('heatmap').innerHTML);")
-        self.assertIn(">7</td>", html)
+        self.assertIn(">≈7</td>", html)  # estimated days carry "≈" (P3 SP-15)
         self.assertNotIn(">10</td>", html)
 
 
@@ -537,15 +537,15 @@ class TestHeatmapCapIsTheWidestWindow(unittest.TestCase):
                   ["a@x.com", "2026-09-14", "r2", 5, 0, 1, 1, 3, False, False, None, None, 0, 1, 7]]
         html = run_js(TEAM, _setup(people=PEOPLE, weekly=weekly) +
                       "state.metric = 'days'; renderHeatmap(); out(el('heatmap').innerHTML);")
-        self.assertIn(">5</td>", html)
+        self.assertIn(">≈5</td>", html)
 
     def test_a_part_week_everywhere_still_caps(self):
         weekly = [["a@x.com", "2026-09-14", "r1", 5, 0, 1, 1, 3, False, False, None, None, 0, 1, 3],
                   ["a@x.com", "2026-09-14", "r2", 5, 0, 1, 1, 2, False, False, None, None, 0, 1, 3]]
         html = run_js(TEAM, _setup(people=PEOPLE, weekly=weekly) +
                       "state.metric = 'days'; renderHeatmap(); out(el('heatmap').innerHTML);")
-        self.assertIn(">3</td>", html)
-        self.assertNotIn(">5</td>", html)
+        self.assertIn(">≈3</td>", html)
+        self.assertNotIn(">≈5</td>", html)
 
 
 

@@ -41,9 +41,9 @@
   full log set that was about 2.6% of estimated usage, across the roughly
   half of sessions that kept a counter.
 
-  A session **without** a counter has no such figure. Most desktop sessions
-  have none (see lines added below), so their cost reads a few percent low and
-  the export leaves `est_cost_unlogged_usd` blank rather than 0.
+  A session **without** a counter has no such figure. Many desktop sessions
+  have none (see CLI-reported cost below), so their cost reads a few percent low
+  and the export leaves `est_cost_unlogged_usd` blank rather than 0.
 
   Two cases where the counter figure is approximate:
   - The counter gives cache writes as one total. The missing writes are split
@@ -166,33 +166,21 @@
   project *and* branch, so the same branch name in two repos stays separate;
   `HEAD` is shown as `(detached)`, since that is what git records for a worktree
   or a rebase rather than a real branch name.
-- **`lines added/removed` and CLI-reported cost depend on where you ran the
-  session.** Both ride on `cost-state` log entries, which Claude Code writes
-  reliably from the CLI and rarely from the desktop app. On a representative log
-  set:
-
-  | Entrypoint | Sessions reporting lines |
-  |---|---|
-  | `cli` | 7 of 8 (88%) |
-  | `claude-desktop` | 8 of 42 (19%) |
-
-  A session with no line count **did not necessarily change no code** — the
-  record simply was not written. If your team works mostly in the desktop app,
-  expect this metric to look mostly empty, and do not read that as low output.
-
-  Coverage is also much better by spend than by session count, because the
-  covered sessions tend to be the large ones: 30% of sessions but 66% of cost on
-  that same set. The export carries both — `sessions_with_line_data` for the
-  count and `cost_with_line_data_usd` for the spend — so a cost-per-line ratio
-  can use the denominator that actually reflects what was measured.
-
-  The count is a running total for the whole session, and its snapshots carry
-  no timestamp. The dashboard dates each rise in the total by the last
-  timestamped record before it, so a date range counts the lines written inside
-  it rather than every line of each session it touches. Snapshots are sparse,
-  though (seven across one six-week session), so lines can land a few days
-  after they were written. The export keeps each session's total in the week
-  the session started.
+- **Lines added/removed count the edits Claude made, and nothing else.** Each
+  Edit, Write, MultiEdit or NotebookEdit result carries the diff it made; the
+  tool counts its `+` and `-` lines in memory (for a new file, its length) and
+  dates them by the edit, so a date range holds the lines written inside it.
+  Changes made outside Claude's edit tools — a shell command that rewrites a
+  file, a formatter, a `git` checkout, or your own editor — aren't counted, and a
+  failed edit counts nothing. A subagent's edits count for its parent session.
+  Versions before 1.1.0 read Claude Code's `cost-state` line counter instead,
+  which has no timestamp, was written mostly when a session closed and is
+  missing from many desktop sessions; this tool no longer uses it for lines.
+- **CLI-reported cost depends on whether the session kept a counter.** Claude
+  Code's `cost-state` counter is written from the CLI and from many, not all,
+  desktop sessions (62% of desktop sessions on one log set). A counter written
+  only when a session was reopened, with no cost in it, is treated as no
+  counter: the session shows no CLI cost rather than $0.00.
 - **A transcript line of an unexpected shape is skipped, not fatal.** A line
   that is valid JSON but not a record (`null`, an array), or whose `message`,
   `usage` or timestamp has the wrong type, costs that one record; the rest of

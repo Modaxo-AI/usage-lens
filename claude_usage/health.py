@@ -60,13 +60,19 @@ EXPIRED_MISS = "previous_message_not_found"
 EDIT_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 PLAN_TOOLS = frozenset({"EnterPlanMode", "ExitPlanMode"})
 
-# Claude Code versions that first wrote the record a measure depends on, as
-# seen in real logs. A session from an older version shows the measure as "not
-# recorded" rather than zero.
+# The first Claude Code version in which this tool's author saw the record a
+# measure depends on in their own logs. It is where *this tool* first saw it,
+# not a date Anthropic published: Claude Code may have written the record
+# earlier, so a session older than this is shown as "not recorded" (rather than
+# zero) with that caveat -- see FIRST_RECORDED_NOTE, carried in the payload.
 FIRST_RECORDED = {
     "denials": "2.1.246",       # user.toolDenialKind
     "compactions": "2.1.237",   # system/compact_boundary
 }
+
+FIRST_RECORDED_NOTE = (
+    "Versions are the first this tool's author saw the record in their own logs, not "
+    "dates Anthropic published; Claude Code may have written it earlier.")
 
 CHECK_CATEGORIES = ("test", "lint", "build", "commit", "pr")
 VERIFY_CATEGORIES = frozenset({"test", "lint", "build"})
@@ -94,7 +100,14 @@ _WRAPPERS = re.compile(
     rf"|xvfb-run(?:\s+(?:-[sfenlp]\s+{_ARG}|--[\w-]+(?:={_ARG})?|-\w+))*"
     r")\s+"
 )
-_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s'\"])*\s+")
+# A value may be quoted, a $(...) or `...` substitution (VAR=$(mktemp -d) cmd),
+# or plain.
+_ENV_ASSIGN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\$\([^)]*\)|`[^`]*`|\$(?!\()|[^\s'\"$`])*\s+")
+# Shell keywords that open a command: "do pytest", "then make", "if pytest".
+_KEYWORD = re.compile(r"^(?:do|then|else|elif|if|while|until|!|\{)\s+")
+# A Python on its own, or named by a variable ("$PY", "${VENV}/bin/python").
+_PYBIN = r"(?:python[0-9.]*|py|\"?\$\{?\w+\}?[\w./-]*\"?)"
 # "./.venv/bin/pytest" is pytest, "./node_modules/.bin/jest" is jest.
 _LEADING_PATH = re.compile(r"^[^\s'\"=]*/(?=[^\s/])")
 # Options that come before the subcommand, dropped so the subcommand is next.
@@ -113,27 +126,32 @@ _NOT_WATCHING = r"(?!.*\s(?:--watch\b|-\w*w\b|serve\b))"
 _PATTERNS = (
     ("test", re.compile(
         r"^(?:pytest|py\.test|tox|nox|jest|vitest|mocha|ava|karma|rspec|phpunit|ctest)\b"
-        r"|^python[0-9.]*\s+-m\s+(?:pytest|unittest)\b"
+        rf"|^{_PYBIN}\s+-m\s+(?:pytest|unittest)\b"
         r"|^(?:python[0-9.]*\s+)?(?:\S*/)?manage\.py\s+test\b"
         r"|^node\b.*\s--test(?![\w-])"
         rf"|^{_JS_RUNNER}\s+test\b|^{_JS_RUNNER}\s+test:"
+        # pnpm/yarn/bun run a package's own binary without `run`.
+        r"|^(?:pnpm|yarn|bun)\s+(?:jest|vitest|mocha|ava|playwright\s+test|cypress\s+run)\b"
         r"|^(?:go|cargo|deno|dotnet|swift|mix|sbt|lein|bazel|flutter|dart)\s+test\b"
+        r"|^cargo\s+nextest\b|^deno\s+task\s+test\b"
+        r"|^(?:rails|rake|bin/rails|bin/rake)\s+(?:test|spec)\b"
         rf"|^{_JVM}\b.*\btest\b"
         r"|^make\s+(?:test|check)\b"
         r"|^(?:playwright|cypress)\s+(?:test|run)\b"
         r"|^xcodebuild\b.*\btest\b"
     )),
     ("lint", re.compile(
-        r"^(?:eslint|flake8|pylint|mypy|pyright|tsc|golangci-lint|rubocop|"
-        r"shellcheck|biome|stylelint|swiftlint|ktlint)\b"
+        r"^(?:eslint|flake8|pylint|mypy|pyright|tsc|vue-tsc|golangci-lint|rubocop|"
+        r"shellcheck|biome|stylelint|swiftlint|ktlint|oxlint|hadolint|yamllint|markdownlint|"
+        r"staticcheck|bandit|pre-commit|lefthook)\b"
         r"|^ruff\b(?!\s+format\b)|^ruff\s+format\b.*\s--check\b"
         # Formatters rewrite files; only their check modes are a check.
         r"|^(?:black|isort)\b.*\s--(?:check|check-only|diff)\b"
-        r"|^python[0-9.]*\s+-m\s+(?:mypy|ruff|flake8|pylint)\b"
-        r"|^python[0-9.]*\s+-m\s+black\b.*\s--(?:check|diff)\b"
+        rf"|^{_PYBIN}\s+-m\s+(?:mypy|ruff|flake8|pylint)\b"
+        rf"|^{_PYBIN}\s+-m\s+black\b.*\s--(?:check|diff)\b"
         rf"|^{_JS_RUNNER}\s+(?:lint|typecheck|type-check|check|format:check)\b"
         r"|^cargo\s+(?:clippy|check)\b|^cargo\s+fmt\b.*\s--check\b"
-        r"|^go\s+vet\b|^prettier\b.*--check|^next\s+lint\b"
+        r"|^go\s+vet\b|^prettier\b.*--check|^next\s+lint\b|^deno\s+(?:lint|check)\b"
         r"|^make\s+lint\b"
     )),
     ("build", re.compile(
@@ -143,17 +161,61 @@ _PATTERNS = (
         r"|^make(?:\s+(?:all|build))?\s*$|^make\s+(?:all|build)\b"
         r"|^(?:vite|next)\s+build\b"
         rf"|^(?:tsup|esbuild|rollup|webpack)(?!\S){_NOT_WATCHING}"
-        r"|^(?:xcodebuild|docker\s+build|docker\s+compose\s+build)\b"
+        r"|^(?:xcodebuild|docker\s+build|docker\s+compose\s+build|docker\s+buildx\s+build)\b"
+        r"|^cmake\s+--build\b|^ninja\b(?!\s+-t\b)|^(?:turbo|nx)\s+(?:run\s+)?build\b"
+        rf"|^(?:poetry|uv|pdm|hatch)\s+build\b|^{_PYBIN}\s+-m\s+build\b"
     )),
     ("commit", re.compile(r"^git\s+commit\b")),
     ("pr", re.compile(r"^gh\s+pr\s+create\b")),
 )
 
-_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+# Longest segment looked at, and longest command: a single command is never this
+# long, but a pasted script can be, and every pattern above is anchored at the
+# start. The cap is per segment, so a long command is read to its end -- a test
+# run after a 5,000-character heredoc still counts.
+_MAX_SEGMENT = 1000
+_MAX_COMMAND = 200_000
+
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w-]*)\1")
 # A heredoc fed to one of these is a script, so its body is commands.
 _SHELLS = re.compile(r"^(?:ba|z|da|k)?sh\b")
+# `bash -c "..."`: the quoted string is itself a command line.
+_SHELL_C = re.compile(r"^(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\s+(\"(?:[^\"\\]|\\.)*\"|'[^']*')")
 _VERSION_QUERY = re.compile(r"\s--version(?:\s|$)")
+_WATCH_OFF = ("false", "0", "no")
+
+
+def _split_segments(command: str) -> list:
+    """The command split at `&&`, `||`, `;`, `|` and newlines that are not inside
+    quotes: `git commit -m "fix; make build pass"` is one segment, not a commit
+    and a build. A quote with no partner is an ordinary character (an apostrophe
+    in plain text), so it can't swallow the rest of the command."""
+    out, start, i, n = [], 0, 0, len(command)
+    while i < n:
+        c = command[i]
+        if c in "\"'":
+            j = i + 1
+            while j < n and command[j] != c:
+                j += 2 if (c == '"' and command[j] == "\\") else 1
+            if j < n:
+                i = j + 1
+                continue
+        elif c == "\\":
+            i += 2
+            continue
+        if c in ";|\n":
+            out.append(command[start:i])
+            i += 2 if command.startswith(("||",), i) else 1
+            start = i
+            continue
+        if c == "&" and command.startswith("&&", i):
+            out.append(command[start:i])
+            i += 2
+            start = i
+            continue
+        i += 1
+    out.append(command[start:])
+    return out
 
 
 def _without_heredocs(command: str) -> str:
@@ -168,16 +230,17 @@ def _without_heredocs(command: str) -> str:
         kept.append(line)
         match = _HEREDOC.search(line)
         if match:
-            segment = _SPLIT.split(line[:match.start()])[-1]
+            segment = _split_segments(line[:match.start()])[-1]
             if not _SHELLS.match(_segment_head(segment)):
                 terminator = match.group(2)
     return "\n".join(kept)
 
 
 def _segment_head(segment: str) -> str:
-    seg = segment.strip().lstrip("(").strip()
-    for _ in range(5):  # a few layers: "cd x && FOO=1 timeout 60 uv run pytest"
+    seg = segment[:_MAX_SEGMENT].strip().lstrip("(").strip()
+    for _ in range(6):  # a few layers: "cd x && FOO=1 timeout 60 uv run pytest"
         before = seg
+        seg = _KEYWORD.sub("", seg)
         seg = _ENV_ASSIGN.sub("", seg)
         seg = _LEADING_PATH.sub("", seg)
         seg = _WRAPPERS.sub("", seg)
@@ -188,7 +251,20 @@ def _segment_head(segment: str) -> str:
     return seg
 
 
-def classify_command(command) -> list:
+def _is_watch(head: str) -> bool:
+    """Is a test command a watcher (it runs until stopped, so it is no check)?
+    `--watch=false` is not."""
+    if re.match(r"^vitest\s+watch\b", head):
+        return True
+    for token in head.split():
+        if token in ("--watch", "--watchAll", "--watchman"):
+            return True
+        if token.startswith("--watch=") and token.split("=", 1)[1].lower() not in _WATCH_OFF:
+            return True
+    return False
+
+
+def classify_command(command, _depth=0) -> list:
     """Categories of the checks a shell command runs, e.g. ["commit", "test"].
 
     Called by the parser on a Bash tool call's command, in memory; only the
@@ -197,32 +273,66 @@ def classify_command(command) -> list:
     if not isinstance(command, str) or not command:
         return []
     found = set()
-    command = command[:4000].replace("\\\n", " ")  # line continuations
-    for segment in _SPLIT.split(_without_heredocs(command)):
+    command = command[:_MAX_COMMAND].replace("\\\n", " ")  # line continuations
+    for segment in _split_segments(_without_heredocs(command)):
         head = _segment_head(segment)
         if not head or _VERSION_QUERY.search(head):
             continue
+        inner = _SHELL_C.match(head)
+        if inner and _depth < 2:
+            found.update(classify_command(inner.group(1)[1:-1], _depth + 1))
+            continue
         for category, pattern in _PATTERNS:
             if pattern.search(head):
+                if category == "test" and _is_watch(head):
+                    break
                 found.add(category)
                 break
     return sorted(found)
 
 
-# Edits no test, lint or build checks: prose, and Claude Code's own files
-# (memory, plans, settings, launch.json). Writing one of these after the last
-# test doesn't leave code unchecked. Like the command patterns above, a change
-# here changes FileFacts and needs a FACTS_VERSION bump.
-_NOTE_SUFFIXES = (".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc")
+# Edits no test, lint or build checks: prose, Claude Code's own files (memory,
+# plans, settings, launch.json), images, throwaway files in a temp or scratch
+# folder, and files outside the folder the session runs in. Writing one of these
+# after the last test doesn't leave the session's code unchecked. Like the
+# command patterns above, a change here changes FileFacts and needs a
+# FACTS_VERSION bump.
+_NOTE_SUFFIXES = (".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".svg")
+# Temp and scratch folders: used only when the session's own folder isn't known
+# (inside it, a file is the session's work even if the folder is under /tmp).
+_SCRATCH = re.compile(
+    r"^/(?:private/)?(?:tmp|var/tmp)/|^/(?:private/)?var/folders/|/scratchpad/|"
+    r"/appdata/local/temp/|^[a-z]:/(?:temp|tmp)/")
 
 
-def is_note_edit(path) -> bool:
+def _inside(path: str, folder) -> bool:
+    if not isinstance(folder, str) or not folder:
+        return False
+    root = folder.replace("\\", "/").lower().rstrip("/")
+    return bool(root) and (path == root or path.startswith(root + "/"))
+
+
+def is_note_edit(path, cwds=()) -> bool:
     """Is an edited file a note rather than code? Called by the parser on an
-    edit tool call's path, in memory; only the answer is kept."""
+    edit tool call's path, in memory; only the answer is kept.
+
+    `cwds` are the folders the session ran in (the record's and the session's
+    first). A file under one of them is the session's own work. An absolute path
+    outside all of them -- a scratch script in /tmp, a file in another project --
+    is not checked by this session's tests, so it is a note; with no folder
+    known, only the temp and scratch locations are."""
     if not isinstance(path, str) or not path:
         return False
     p = path.replace("\\", "/").lower()
-    return p.endswith(_NOTE_SUFFIXES) or "/.claude/" in p or p.startswith(".claude/")
+    if p.endswith(_NOTE_SUFFIXES) or "/.claude/" in p or p.startswith(".claude/"):
+        return True
+    absolute = p.startswith("/") or re.match(r"^[a-z]:/", p) is not None
+    if not absolute:
+        return False
+    known = [c for c in cwds if isinstance(c, str) and c]
+    if any(_inside(p, c) for c in known):
+        return False
+    return bool(known) or bool(_SCRATCH.search(p))
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +396,30 @@ def _miss_cost(rec: dict) -> tuple:
     return extra, missed
 
 
+def _first_after_compaction(priced_winners, main_facts, sub_facts, ordered) -> set:
+    """ids of the requests that are the first main-conversation request of their
+    session after a compact boundary."""
+    boundaries = defaultdict(set)  # session -> compaction timestamps
+    for sid, facts in (ordered if ordered is not None else main_facts + sub_facts):
+        for _uuid, ts, ekind, _value in getattr(facts, "health_events", None) or []:
+            if ekind == "compact" and isinstance(ts, str) and ts:
+                boundaries[sid].add(ts)
+    if not boundaries:
+        return set()
+    by_session = defaultdict(list)
+    for rec, sid, kind, _cost in priced_winners:
+        if kind == "main" and sid in boundaries and rec.get("ts"):
+            by_session[sid].append(rec)
+    first = set()
+    for sid, recs in by_session.items():
+        recs.sort(key=lambda r: r["ts"])
+        for boundary in boundaries[sid]:
+            nxt = next((r for r in recs if r["ts"] > boundary), None)
+            if nxt is not None:
+                first.add(id(nxt))
+    return first
+
+
 def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, ordered=None) -> tuple:
     """Return (health payload, {session_id: per-session health}).
 
@@ -311,6 +445,10 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
     # ---- requests: context size and cache misses ----------------------- #
     context_rows = defaultdict(lambda: [0, 0.0])
     miss_rows = defaultdict(lambda: [0, 0.0, 0])
+    # The first main-conversation request after a compaction has to write the
+    # whole summarised context to the cache afresh. That is expected, not a miss
+    # worth flagging (Claude Code's /usage doesn't count it as one either).
+    compacted = _first_after_compaction(priced_winners, main_facts, sub_facts, ordered)
     for rec, sid, kind, cost in priced_winners:
         b = bucket(rec.get("ts"))
         if kind == "main":
@@ -329,7 +467,7 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
             if tokens > VERY_LONG_CONTEXT_TOKENS:
                 s["very_long_context_cost"] += cost
         reason = rec.get("cache_miss")
-        if reason:
+        if reason and id(rec) not in compacted:
             extra, missed = _miss_cost(rec)
             acc = miss_rows[(b, sid, rec["model"], reason)]
             acc[0] += 1
@@ -394,6 +532,8 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
         tool_ts = getattr(facts, "tool_ts", None) or {}
         checks = getattr(facts, "tool_checks", None) or {}
         notes = set(getattr(facts, "note_edits", None) or ())
+        refused = set(getattr(facts, "tool_refused", None) or ())
+        errors = getattr(facts, "tool_errors", None) or {}
         for tuid, name in (facts.tool_calls or {}).items():
             if tuid in seen_tools:
                 continue
@@ -408,6 +548,10 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
             elif name in PLAN_TOOLS:
                 plan_tool.add(sid)
             for category in checks.get(tuid) or ():
+                # A refused command never ran, and a commit or PR that failed
+                # made nothing. A failed test, lint or build still ran a check.
+                if tuid in refused or (category in ("commit", "pr") and errors.get(tuid)):
+                    continue
                 check_rows[(bucket(ts), sid, category)] += 1
                 s_checks = per[sid]["checks"]
                 s_checks[category] = s_checks.get(category, 0) + 1
@@ -455,6 +599,8 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
             "error_streak": ERROR_STREAK,
         },
         "benchmarks": BENCHMARKS,
+        # Where `recorded` comes from: see FIRST_RECORDED.
+        "first_recorded": {**FIRST_RECORDED, "note": FIRST_RECORDED_NOTE},
         "sources": {"costs": COSTS_DOC, "best_practices": BEST_PRACTICES_DOC,
                     "context_engineering": CONTEXT_ENGINEERING_DOC},
         # [bucket, session_id, model, band, requests, cost]; main thread only.

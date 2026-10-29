@@ -24,10 +24,17 @@ memory with only the result kept:
 - Slash-command markup. A user record opening with Claude Code's own markup
   (`<command-name>`, `<local-command-stdout>`, `<bash-input>` and the like) is
   a command or its output, not a prompt. Only the prefix is tested.
-- Note edits. An edit tool call's file path is tested for being prose or one
-  of Claude Code's own files (`health.is_note_edit`), so writing a memory file
-  after the last test doesn't count as an unchecked edit. Only the yes/no is
-  kept; the path is never stored.
+- Note edits. An edit tool call's file path is tested for being prose, one
+  of Claude Code's own files, a scratch file, or a file outside the folder the
+  session runs in (`health.is_note_edit`), so writing a memory file or a
+  throwaway script after the last test doesn't count as an unchecked edit. Only
+  the yes/no is kept; the path is never stored.
+- Lines changed. An edit's result carries the diff it made. The `+` and `-`
+  lines of its hunks (or, for a new file, the lines of its content) are
+  counted in memory; only the two numbers are kept, never a line.
+- Slash commands that start a skill. A user record opening with
+  `<command-name>` has its command name read (not its arguments) and kept; the
+  aggregate uses it only when the name is a skill seen elsewhere in the logs.
 - Response size. Subagent transcripts from Claude Code 2.1.284 on keep only a
   placeholder output count, so the output is estimated from how much the
   response wrote (aggregate.imputed_output). The length of its text, thinking
@@ -63,8 +70,13 @@ _NOT_PROMPT_PREFIXES = (
 # of silently serving a payload with holes in it. 17: a file starting with a
 # byte-order mark no longer loses its first record. 18: requests record whether
 # a thinking count was logged; a timestamp-less repeat of a tool call no longer
-# erases the call's real time.
-FACTS_VERSION = 18
+# erases the call's real time. 19: tool calls and skill calls carry the model
+# that made them; refused tool calls are kept apart from errors; per-edit line
+# counts; slash commands that start a skill; permission modes come from user
+# records (not the editor-mode `mode` record); edits outside the session's
+# folder or in scratch paths are notes; check categories are classified per
+# command segment, quote-aware, with more runners.
+FACTS_VERSION = 19
 
 
 # Re-exported here: the parser is where untrusted fields are read.
@@ -160,7 +172,19 @@ class FileFacts:
     tool_calls: dict = field(default_factory=dict)       # tool_use_id -> tool name
     tool_errors: dict = field(default_factory=dict)      # tool_use_id -> bool is_error
     tool_ts: dict = field(default_factory=dict)          # tool_use_id -> ISO ts of the call (or its result)
-    skill_invocations: list = field(default_factory=list)  # [{id, ts, skill}], id = tool_use_id
+    # [{id, ts, skill, model}], id = tool_use_id, model = the response that made the call
+    skill_invocations: list = field(default_factory=list)
+    # [{id, ts, name, model}], id = the record's uuid: a slash command typed by
+    # the user (`<command-name>/X`), model = the response that answered it. Only
+    # the command's name is kept, never its arguments.
+    command_invocations: list = field(default_factory=list)
+    tool_models: dict = field(default_factory=dict)      # tool_use_id -> model that made the call
+    # tool_use_ids whose result is a refusal (the user record carries
+    # toolDenialKind): the call never ran, so it is neither an error nor a check.
+    tool_refused: list = field(default_factory=list)
+    # [[tool_use_id, ts, lines added, lines removed]], one per successful edit,
+    # from the diff in the edit's own result (numbers only).
+    edit_lines: list = field(default_factory=list)
     first_ts: str = None
     last_ts: str = None
     first_cwd: str = None
@@ -236,6 +260,49 @@ def _starts_with(content, prefix) -> bool:
         if isinstance(text, str) and text.lstrip().startswith(prefix):
             return True
     return False
+
+
+_COMMAND_NAME = re.compile(r"\s*<command-name>\s*/?([A-Za-z0-9][\w:.-]{0,79})\s*</command-name>")
+
+
+def _command_name(content):
+    """The slash command a user record starts, e.g. "next-task" from
+    `<command-name>/next-task</command-name>`, else None. Only the name is
+    read -- never `<command-args>`, which holds what the user typed after it --
+    and only a plain name of the shape a command or skill has."""
+    if isinstance(content, list):
+        content = next((b.get("text") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                        and isinstance(b.get("text"), str)), None)
+    if not isinstance(content, str):
+        return None
+    m = _COMMAND_NAME.match(content)
+    return m.group(1) if m else None
+
+
+def _diff_lines(result):
+    """(lines added, lines removed) by one edit, from its result's own diff, or
+    None when the result holds none. Lines are counted by their first character
+    -- "+" or "-" -- across the hunks, or, for a file the call created, as the
+    lines of its content. Only the two numbers leave this function."""
+    if not isinstance(result, dict):
+        return None
+    if result.get("type") == "create" and isinstance(result.get("content"), str):
+        text = result["content"]
+        return text.count("\n") + (1 if text and not text.endswith("\n") else 0), 0
+    hunks = result.get("structuredPatch")
+    if not isinstance(hunks, list):
+        return None
+    added = removed = 0
+    for hunk in hunks:
+        lines = hunk.get("lines") if isinstance(hunk, dict) else None
+        for line in lines if isinstance(lines, list) else ():
+            if isinstance(line, str):
+                if line.startswith("+"):
+                    added += 1
+                elif line.startswith("-"):
+                    removed += 1
+    return added, removed
 
 
 def _has_tool_result(content) -> bool:
@@ -314,6 +381,8 @@ def parse_file(path: str, kind: str):
     final_ids = set()
     size_by_id = {}  # response id -> [visible chars, signature chars, line uuids seen]
     streak = None    # [first tool_use_id, ts, length] of the current error run
+    pending_commands = []  # slash commands waiting for the response that answers them
+    edit_seen = set()      # tool_use_ids whose diff has been counted
     last_turn = None  # "prompt" | "assistant" | "interrupt", for how the file ends
 
     try:
@@ -357,6 +426,7 @@ def parse_file(path: str, kind: str):
 
             t = d.get("type")
             uuid = _sid(d.get("uuid"))
+            denied = False  # set below for a user record that refuses a tool call
             if ts:
                 facts.activity.append((uuid, ts))
 
@@ -368,11 +438,8 @@ def parse_file(path: str, kind: str):
                 facts.agent_name = d["agentName"]
             elif t == "permission-mode" and _name(d.get("permissionMode")):
                 facts.permission_modes[d["permissionMode"]] += 1
-            elif t == "mode" and _name(d.get("mode")):
-                # `mode` is the common form by a wide margin; `permission-mode` is
-                # comparatively rare, so reading only the latter leaves most
-                # sessions with no mode at all.
-                facts.permission_modes[d["mode"]] += 1
+            # (A `mode` record is the editor's input mode -- "normal" -- not a
+            # permission mode; it is not read.)
             elif t == "cost-state":
                 facts.cost_states.append({
                     "totalCostUSD": _money(d.get("totalCostUSD")),
@@ -429,9 +496,20 @@ def parse_file(path: str, kind: str):
                     if kind == "main":
                         facts.health_events.append([uuid, ts, "queued", None])
             elif t == "user":
-                if _text(d.get("toolDenialKind")):
+                denied = bool(_text(d.get("toolDenialKind")))
+                if denied:
                     facts.health_events.append([uuid, ts, "denial", d["toolDenialKind"]])
+                # The mode each user record was sent in: `permission-mode`
+                # records are rare, user records carry it on every turn.
+                if kind == "main" and _name(d.get("permissionMode")):
+                    facts.permission_modes[d["permissionMode"]] += 1
                 content = _dict(d.get("message")).get("content")
+                if kind == "main":
+                    command = _command_name(content)
+                    if command:
+                        entry = {"id": uuid, "ts": ts or facts.last_ts, "name": command, "model": None}
+                        facts.command_invocations.append(entry)
+                        pending_commands.append(entry)
                 if kind == "main" and _starts_with_interrupt(content):
                     facts.health_events.append([uuid, ts, "interrupt", None])
                     last_turn = "interrupt"
@@ -473,6 +551,9 @@ def parse_file(path: str, kind: str):
 
             if usage and model and model != "<synthetic>" and response_id:
                 last_turn = "assistant"
+                for entry in pending_commands:
+                    entry["model"] = model
+                pending_commands.clear()
                 miss = _dict(_dict(message.get("diagnostics")).get("cache_miss_reason"))
                 if _text(miss.get("type")):
                     miss_by_id[response_id] = (miss["type"], _tok(miss.get("cache_missed_input_tokens")))
@@ -524,6 +605,8 @@ def parse_file(path: str, kind: str):
 
             content = message.get("content")
             if isinstance(content, list):
+                n_results = sum(1 for b in content
+                                if isinstance(b, dict) and b.get("type") == "tool_result")
                 for block in content:
                     if not isinstance(block, dict):
                         continue
@@ -533,6 +616,10 @@ def parse_file(path: str, kind: str):
                         name = _name(block.get("name"))
                         if bid and name:
                             facts.tool_calls[bid] = name
+                            # The model of the response that made the call, so a
+                            # model filter can keep the calls that model made.
+                            if model and model != "<synthetic>" and bid not in facts.tool_models:
+                                facts.tool_models[bid] = model
                             # An api-request-blob repeats the call with no
                             # timestamp: keep the real one, never overwrite it
                             # with None (the call would move to the session's
@@ -544,7 +631,9 @@ def parse_file(path: str, kind: str):
                                 if skill:
                                     # The id lets aggregate count a call once
                                     # across fork/resume copies, as for tools.
-                                    facts.skill_invocations.append({"id": bid, "ts": ts, "skill": skill})
+                                    facts.skill_invocations.append(
+                                        {"id": bid, "ts": ts, "skill": skill,
+                                         "model": facts.tool_models.get(bid)})
                             elif name == "Bash":
                                 # Categorised here, in memory; the command is
                                 # never stored (see the module docstring).
@@ -554,13 +643,22 @@ def parse_file(path: str, kind: str):
                             elif name in EDIT_TOOLS:
                                 # The path is tested in memory and dropped.
                                 inp = _dict(block.get("input"))
-                                if is_note_edit(inp.get("file_path") or inp.get("notebook_path")):
+                                if is_note_edit(inp.get("file_path") or inp.get("notebook_path"),
+                                                (d.get("cwd"), facts.first_cwd)):
                                     facts.note_edits.append(bid)
                     elif btype == "tool_result":
                         tuid = _sid(block.get("tool_use_id"))
                         if tuid:
                             is_error = bool(block.get("is_error"))
-                            if tuid not in facts.tool_errors:
+                            first_result = tuid not in facts.tool_errors
+                            if denied and is_error:
+                                # A refusal: the call never ran, so it is not an
+                                # error, and it neither extends nor ends a run of
+                                # them.
+                                if first_result:
+                                    facts.tool_refused.append(tuid)
+                                is_error = False
+                            elif first_result:
                                 # Consecutive failures in this transcript's
                                 # order; a repeated result line doesn't extend it.
                                 if is_error:
@@ -569,6 +667,15 @@ def parse_file(path: str, kind: str):
                                     streak[2] += 1
                                 else:
                                     streak = _close_streak(facts, streak)
+                            if (not is_error and not denied and n_results == 1
+                                    and tuid not in edit_seen
+                                    and facts.tool_calls.get(tuid, "Edit") in EDIT_TOOLS):
+                                # Counted here, in memory; only the two numbers
+                                # are kept (see the module docstring).
+                                edit_seen.add(tuid)
+                                counted = _diff_lines(d.get("toolUseResult"))
+                                if counted is not None:
+                                    facts.edit_lines.append([tuid, ts or facts.last_ts, *counted])
                             facts.tool_errors[tuid] = is_error
                             # Only used when the matching tool_use never appeared.
                             facts.tool_ts.setdefault(tuid, ts)

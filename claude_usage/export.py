@@ -1,6 +1,6 @@
 """CSV export for business review: what Claude Code usage cost, and what came out of it.
 
-Produces three files from an already-built payload:
+Produces six files from an already-built payload:
 
 * ``...-summary-...csv``   — one row per person x project x week
 * ``...-sessions-...csv``  — one row per session
@@ -19,8 +19,9 @@ is the unit that travels.
 
 Three conventions the numbers depend on -- see docs/export.md:
 
-1. **Missing is blank, not zero.** ``lines_added`` is empty when Claude Code
-   never recorded a ``cost-state`` entry for that session. A zero would read as
+1. **Missing is blank, not zero.** ``lines_added`` is empty when the session
+   made no edit that left a diff in its transcript (it is counted from each
+   edit's own result). A zero would read as
    "delivered nothing" and silently drag down any average computed over it. The
    ``sessions_with_*`` coverage columns say how many sessions actually carried
    each signal, so a denominator is never accidentally incomplete.
@@ -28,8 +29,15 @@ Three conventions the numbers depend on -- see docs/export.md:
    transcripts of work already counted; including them would double-count cost
    for anyone who sums the session sheet.
 3. **Session-level facts land in the week the session started.** Cost and tokens
-   are per-request and split across weeks naturally, but active time, lines
-   changed and PRs belong to a session that may span weeks.
+   are per-request and split across weeks naturally, but active time and the
+   session's own totals (lines changed, the PRs it opened) belong to a session
+   that may span weeks. Tool calls and errors, PRs and the health counts are
+   dated by the call, PR or event itself.
+
+Every sheet names the zone its days are in (``bucket_zone``): the export zone
+(``--tz``, else ``CLAUDE_USAGE_EXPORT_TZ``, else UTC), not the machine's. The
+dashboard's date range is read in the machine's zone, so its totals equal an
+export's only for the same days in the same zone.
 """
 from __future__ import annotations
 
@@ -360,9 +368,16 @@ def build_context(payload, person, since=None, until=None, now=None, zone=None):
     # an uncapped window would pad an export for "2030" with empty weeks.
     window_to = min(until or today.isoformat(), today.isoformat())
     # The window the file claims to cover: what was asked for, else what the
-    # logs on this machine actually reach back to. With no logs at all, just
-    # today: the file still needs a row to say whose seat it is.
-    window_from = since or (days[0] if days else window_to)
+    # logs on this machine actually reach back to. With no logs at all (Claude
+    # Code deletes CLI transcripts after 30 days by default, so a person who has
+    # been away that long has none) the seat was idle for at least the retention
+    # period, so the window is that long, ending today -- not the one day that
+    # would price the seat at a day's cost and call every earlier week "not
+    # covered". Such a file has person_active_days 0 and no last_active_date;
+    # pass --since to say how far back the person really was a seat holder.
+    window_from = since or (days[0] if days else (
+        datetime.date.fromisoformat(window_to)
+        - datetime.timedelta(days=context_mod.NO_LOGS_WINDOW_DAYS - 1)).isoformat())
     in_window = [d for d in days if _in_range(d, window_from, window_to)]
     past = [d for d in days if d <= today.isoformat()]
     last_active = past[-1] if past else None
@@ -590,6 +605,15 @@ def _days_in_window(week, window_from, window_to):
                             window_from, window_to))
 
 
+def _opened_prs(session):
+    """The PRs a session opened: those the payload attributes to it. A session
+    row lists every PR it linked (a continuation repeats its parent's), but each
+    PR is opened once, by the session with its earliest link, so summing this
+    over sessions equals the PR count."""
+    return [p for p in session.get("prs") or []
+            if p.get("session_id", session["id"]) == session["id"]]
+
+
 def summary_rows(payload, person, since=None, until=None, ctx=None):
     email, name = person
     ctx = _context_for(payload, person, since, until, ctx)
@@ -600,6 +624,13 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
     # work. Filtering those by session would drop real cost.
     sessions = {s["id"]: s for s in payload["sessions"] if not s.get("derived")}
     project_of = context_mod.project_by_key(payload)
+    # The sessions sheet skips a fork copy that owns no request, so the summary's
+    # health counts (prompts, interrupts...) skip it too, or the two sheets would
+    # total different numbers (EX-4).
+    owned = Counter()
+    for r in payload["usage"]:
+        owned[r[1]] += r[12]
+    skipped = {s["id"] for s in payload["sessions"] if s.get("derived") and not owned[s["id"]]}
     is_cli = {s["id"]: context_mod.dominant_entrypoint(s) == "cli" for s in payload["sessions"]}
 
     acc = defaultdict(lambda: {
@@ -676,11 +707,12 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         # A transcript that never got a reply is listed on the sessions sheet
         # but isn't a session (the dashboard's rule), so it isn't counted
         # (schema 12). A payload without the field counts, as before.
-        if s.get("requests", 1):
+        counted = bool(s.get("requests", 1))
+        if counted:
             b["sessions"] += 1
         b["active_ms"] += s.get("active_ms") or 0
         session_cost = (s.get("est_cost_main") or 0.0) + (s.get("est_cost_sub") or 0.0)
-        if s.get("prs"):
+        if _opened_prs(s):
             b["with_prs"] += 1
             b["cost_with_prs"] += session_cost
         # Blank, not zero, when the signal was never recorded.
@@ -696,12 +728,15 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         # session started.
         if s.get("est_cost_unlogged") is not None:
             b["unlogged"] = (b["unlogged"] or 0.0) + s["est_cost_unlogged"]
-        h = s.get("health") or {}
+        # The numerators of the sessions_* shares count only sessions that
+        # sessions_started counts, so a share never has a transcript that got no
+        # reply on top (TM-8).
+        h = (s.get("health") or {}) if counted else {}
         if h.get("edits"):
             b["h_edited"] += 1
             b["h_checked"] += 1 if h.get("checked_after_last_edit") else 0
         b["h_plan"] += 1 if h.get("plan_mode") else 0
-        b["h_subagents"] += 1 if s.get("n_subagents") else 0
+        b["h_subagents"] += 1 if counted and s.get("n_subagents") else 0
         if h.get("instructions") is not None:
             b["h_instructions"] += 1
             b["h_project_md"] += 1 if "Project" in h["instructions"] else 0
@@ -725,7 +760,7 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         return (_week_start(day), project_of[sid])
     friction = _friction_by(payload, week_project)
     limit_hits = _limits_by(payload, week_project, ctx["_tz"])
-    health = _health_by(payload, week_project)
+    health = _health_by(payload, lambda day, sid: None if sid in skipped else week_project(day, sid))
     for key in list(friction) + list(limit_hits) + list(health):
         acc[key]  # a week with only friction (e.g. all retries failed) still gets a row
 
@@ -850,7 +885,7 @@ def session_rows(payload, person, since=None, until=None, include_titles=True, c
         output_t = a.get("output", 0)
         read_t = a.get("cache_read", 0)
         write_t = a.get("cache_write", 0)
-        prs = s.get("prs") or []
+        prs = _opened_prs(s)
         rows.append(_render(SESSION_COLUMNS, {
             "person_email": email, "person_name": name,
             "session_id": export_id[s["id"]],

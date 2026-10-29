@@ -135,8 +135,8 @@ memory, keeping only the result: the limit type and reset time from Claude
 Code's own usage-limit notice; whether a message starts with its interrupt
 marker or its markup for a slash command; the category of a shell command
 Claude ran (test, lint, build, commit, PR); whether an edited file is a note or
-doc rather than code; and the length of each reply, to estimate output the
-logs leave out. See [Privacy](docs/privacy.md). The server binds
+doc rather than code; how many lines each edit added and removed; and the
+length of each reply, to estimate output the logs leave out. See [Privacy](docs/privacy.md). The server binds
 to `127.0.0.1` only. The one network request the tool makes is a daily check of
 Anthropic's public pricing page, which sends nothing about you (`--offline`
 turns it off).

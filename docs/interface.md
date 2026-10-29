@@ -9,12 +9,27 @@ the charts, but only where a chart is single-series.
 
 The charts whose categories can run long fold anything past the top few into a
 grey "Other": *By project* and *Cost/Tokens by skill per …* (top 7), the skill
-cost and invocation bars and *Top branches by cost* (top 8), and *CLI versions
-over time* (top 7). *Calls by tool* shows only the 15 most-called tools, with no
-"Other" bar, so its bars need not add up to the total. Every other chart --
-models, token types, MCP servers, tool error rates, subagent types and depth,
-entry points, permission modes -- shows every category. Every section has a
-table view alongside its charts.
+cost and invocation bars and *Top branches by cost* (top 8), *CLI versions over
+time* (top 7 of the versions actually plotted, each session under the one it ran
+most), and the *Skill × project* grid (top 7 projects, then an "Other" column).
+*Calls by tool* shows only the 15 most-called tools, with no "Other" bar, so its
+bars need not add up to the total; *Errors by tool* is ranked by error count, shows
+the top 15 of the tools with at least 10 calls, and its note says how many more
+tools (and errors) are not shown and how many smaller tools are not ranked. It is
+a count of errors coloured by error rate, not a list of rates. The *MCP server
+rollup* covers MCP servers only: Claude Code's own tools are left out, with their
+total in the note, so they don't swamp the integrations. Every other chart --
+models, token types, subagent types and depth, entry points, permission modes --
+shows every category. The Overview's data table, the Skills, Tools, Agents and
+Sessions tables and the pull-request table are the table views; the Habits tab and
+the Output & env charts have none. The Subagents table lists the newest 500 and says
+how many there are in all.
+
+Quick ranges count back from the last day that has data, not from today, and the
+buttons say so. A date chip appears only for a range that is neither the default
+(the last 5 days of data) nor *All*. The filters (dates, bucket size, project, model)
+are also kept in the address, so a view can be bookmarked or shared and survives a
+reload. The charts re-colour when the OS switches between light and dark.
 
 The Overview tab's **Usage limits & friction** card shows where this limit week
 stands against the estimated weekly allowance (with a projected hit time when on

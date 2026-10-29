@@ -6,7 +6,7 @@
 // team.team_payload's weekly row layout.
 const W = { person: 0, week: 1, repo: 2, cost: 3, tokens: 4, requests: 5, sessionsActive: 6,
   activeDays: 7, partial: 8, cliGap: 9, linesAdded: 10, linesRemoved: 11, costWithLines: 12,
-  sessionsStarted: 13, weekDays: 14, subagentCost: 15, apiRetries: 16, weekActiveDays: 17 };
+  sessionsStarted: 13, weekDays: 14, subagentCost: 15, apiRetries: 16, weekActiveDays: 17, machine: 18 };
 
 // The findings' thresholds.
 // contextTokens is a line the export already applied (health.py's
@@ -14,10 +14,12 @@ const W = { person: 0, week: 1, repo: 2, cost: 3, tokens: 4, requests: 5, sessio
 const FINDING = { concentration: 0.40, minCalls: 20, errorRate: 0.10, perDay: 30,
   contextShare: 0.10, contextTokens: 500000, staleDays: 7 };
 // Spend the logs couldn't tie to a project folder: never "a repository" for
-// the concentration rule.
+// the concentration rule. The exporter writes "(unknown project)"; the page's own
+// label for a blank one is "(no project)".
 const NO_PROJECT = '(no project)';
+const NO_PROJECTS = new Set([NO_PROJECT, '(unknown project)']);
 // Anthropic, "Manage costs effectively": about $13 per developer per active
-// day on average, under $30 for 90% of users.
+// day on average, under $30 for 90% of users (across enterprise deployments).
 const BENCHMARK = { average: 13, p90: 30 };
 
 // Claude Code's own tools: their errors are Claude Code's business, not an
@@ -52,10 +54,64 @@ function integrationLabel(integration, tool) {
   return UUID_RE.test(integration || '') ? `MCP connector (${integration.slice(0, 8)}…)` : `${integration} (MCP)`;
 }
 function isClaudeCodeTool(integration, tool) { return integration === 'built-in' && CLAUDE_CODE_TOOLS.has(tool); }
-// A built-in tool name that never once succeeded is one the model made up (a
-// lowercase `bash`): no such tool exists, so nothing can be fixed. An MCP tool
-// that never succeeded is a broken integration, and is kept.
-function inventedTool(integration, t) { return integration === 'built-in' && t.calls > 0 && t.errors >= t.calls; }
+// Claude Code's built-in tool names (code.claude.com/docs/en/tools-reference,
+// and the older names still in old logs). A name outside this list that never
+// once succeeded is one the model made up, or one that isn't available (a
+// lowercase `bash`): nothing there can be fixed. A real tool that fails every
+// time (WebSearch refused by a policy) is a finding, and is always kept.
+const BUILTIN_TOOLS = new Set(['Agent', 'Artifact', 'AskUserQuestion', 'Bash', 'CronCreate', 'CronDelete',
+  'CronList', 'Edit', 'EndConversation', 'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree',
+  'Glob', 'Grep', 'LSP', 'ListAgents', 'ListMcpResourcesTool', 'Monitor', 'NotebookEdit', 'PowerShell',
+  'PushNotification', 'Read', 'ReadMcpResourceTool', 'RemoteTrigger', 'ReportFindings', 'ScheduleWakeup',
+  'SendFeedback', 'SendMessage', 'SendUserFile', 'ShareOnboardingGuide', 'Skill', 'SubagentHandback',
+  'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate', 'TodoWrite', 'ToolSearch',
+  'WaitForMcpServers', 'WebFetch', 'WebSearch', 'Workflow', 'Write',
+  'Task', 'MultiEdit', 'LS', 'NotebookRead', 'TodoRead', 'KillShell', 'BashOutput', 'exit_plan_mode']);
+// "A tool name that isn't a Claude Code built-in and never succeeded (made up by
+// the model, or not available)": decided by name, so a real tool that fails
+// every time stays. MCP tools are never this (see analyzeTools).
+function inventedTool(integration, tool, t) {
+  if (t === undefined) { t = tool; tool = null; }  // (integration, {calls, errors}): no name to check
+  return integration === 'built-in' && !BUILTIN_TOOLS.has(tool) && t.calls > 0 && t.errors >= t.calls;
+}
+
+// The selected tool rows, [person, week, tool, integration, calls, errors],
+// sorted into what the Friction table and the integration finding show:
+//  rows        one per MCP server (its tools added together) and one per built-in
+//              tool, with calls, errors and `people` {person: errors} (only those who hit errors);
+//  neverWorked MCP tool names that never once succeeded while their server's other
+//              tools did: a name the model got wrong, or a tool that isn't there.
+//              Kept out of the server's rate, so they can't make a healthy
+//              server look broken;
+//  invented    built-in-looking names that aren't Claude Code tools and never succeeded.
+// A server whose every tool failed is a broken integration and stays whole.
+function analyzeTools(toolRows) {
+  const tools = dict();
+  (toolRows || []).forEach(([person, , tool, integration, calls, errors]) => {
+    const key = integration + '\u0000' + tool;
+    const t = tools[key] || (tools[key] = { tool, integration, calls: 0, errors: 0, people: dict() });
+    t.calls += calls || 0; t.errors += errors || 0;
+    if (errors > 0) t.people[person] = (t.people[person] || 0) + errors;
+  });
+  const working = dict();  // MCP servers with a tool that succeeded at least once
+  Object.values(tools).forEach(t => { if (t.integration !== 'built-in' && t.calls > t.errors) working[t.integration] = true; });
+  const rows = dict(), neverWorked = [], invented = [];
+  Object.values(tools).forEach(t => {
+    const mcp = t.integration !== 'built-in';
+    if (mcp && t.calls > 0 && t.errors >= t.calls && working[t.integration]) {
+      neverWorked.push({ server: integrationLabel(t.integration, t.tool), tool: t.tool, calls: t.calls });
+      return;
+    }
+    if (!mcp && inventedTool(t.integration, t.tool, t)) { invented.push({ tool: t.tool, calls: t.calls }); return; }
+    const label = integrationLabel(t.integration, t.tool);
+    const r = rows[label] || (rows[label] = { label, integration: t.integration, mcp, cc: isClaudeCodeTool(t.integration, t.tool),
+      calls: 0, errors: 0, people: dict() });
+    r.calls += t.calls; r.errors += t.errors;
+    Object.entries(t.people).forEach(([p, n]) => { r.people[p] = (r.people[p] || 0) + n; });
+  });
+  const byName = (a, b) => b.calls - a.calls || String(a.tool).localeCompare(String(b.tool));
+  return { rows: Object.values(rows), neverWorked: neverWorked.sort(byName), invented: invented.sort(byName) };
+}
 
 // Keyed accumulators hold names from other people's files, so they have no
 // prototype: a repo, person or tool called "toString" or "__proto__" is an
@@ -94,43 +150,50 @@ function repoSpend(rows, top = 8) {
 }
 
 // One person-week's active days from its rows (one per project per machine).
-// Rows from two machines: the larger figure, never the sum. A row with the
-// exact count (week_active_days) contributes to `exact`, the busiest
-// machine's days; a row without it (an older export) falls back to its
-// per-project days, summed and capped by the days of that week inside an
-// export window (the widest window any machine had, never above 7; a row that
-// doesn't say counts as a full week). The week's days are the larger of the
-// two; `approx` is true when the fallback decided. One rule for the People
-// table, the heatmap and spend per active day.
+// Each machine's days are its own: the larger of its exact count
+// (week_active_days) and, for a row without it (an older export), its
+// per-project days summed and capped by the days of that week inside an export
+// window (never above 7; a row that doesn't say counts as a full week).
+// Exports carry counts, not the days, so a day worked on two machines can't be
+// told from two days: with several machines the week has between the busiest
+// machine's days (a floor) and the machines' days added together (capped at 7).
+// `days` is the floor, `lo`/`hi` the range, and `approx` says some part is an
+// estimate (an older export, or machines whose days may or may not overlap).
+// One rule for the People table, the heatmap and spend per active day.
 function weekDaysCap(current, weekDays) {
   return Math.max(current, weekDays == null ? 7 : Math.min(7, weekDays));
 }
-function weekActiveDays(rows) {
-  let exact = null, sum = 0, cap = 0;
+function weekFigure(rows) {
+  const machines = dict();
   rows.forEach(r => {
-    if (r[W.weekActiveDays] != null) exact = Math.max(exact == null ? 0 : exact, r[W.weekActiveDays]);
-    else { sum += r[W.activeDays] || 0; cap = weekDaysCap(cap, r[W.weekDays]); }
+    const m = machines[r[W.machine] || ''] || (machines[r[W.machine] || ''] = { exact: null, sum: 0, cap: 0, most: 0 });
+    if (r[W.weekActiveDays] != null) m.exact = Math.max(m.exact == null ? 0 : m.exact, r[W.weekActiveDays]);
+    else {
+      const d = r[W.activeDays] || 0;
+      m.sum += d; m.most = Math.max(m.most, d); m.cap = weekDaysCap(m.cap, r[W.weekDays]);
+    }
   });
-  const e = exact == null ? 0 : exact, fallback = Math.min(sum, cap);
-  return { days: Math.max(e, fallback), approx: fallback > e };
+  let est = 0, lo = 0, hi = 0, approx = false, count = 0;
+  Object.values(machines).forEach(m => {
+    const e = m.exact == null ? 0 : m.exact, fallback = Math.min(m.sum, m.cap);
+    est = Math.max(est, e, fallback);
+    lo = Math.max(lo, e, Math.min(m.most, m.cap));
+    hi += Math.max(e, fallback);
+    if (fallback > e) approx = true;
+    count++;
+  });
+  hi = Math.min(hi, 7);
+  const multi = count > 1 && lo < hi;
+  return { days: est, approx: approx || multi, lo: Math.min(lo, hi), hi, multi, fallback: approx };
 }
+function weekActiveDays(rows) { const f = weekFigure(rows); return { days: f.days, approx: f.approx }; }
 // The least and most days a week can have from its rows: the busiest single
 // project's days (a lower bound: every project day is a day the person worked)
 // and the capped sum of the projects' days (an upper bound: days with several
-// projects are counted once per project). A week with an exact count has both
-// equal to it.
-function weekBounds(rows) {
-  let exact = null, sum = 0, cap = 0, most = 0;
-  rows.forEach(r => {
-    if (r[W.weekActiveDays] != null) exact = Math.max(exact == null ? 0 : exact, r[W.weekActiveDays]);
-    else {
-      const d = r[W.activeDays] || 0;
-      sum += d; most = Math.max(most, d); cap = weekDaysCap(cap, r[W.weekDays]);
-    }
-  });
-  const e = exact == null ? 0 : exact;
-  return { lo: Math.max(e, Math.min(most, cap)), hi: Math.max(e, Math.min(sum, cap)) };
-}
+// projects are counted once per project), and for several machines the busiest
+// one's days to all of them added (capped at 7). A week with an exact count on
+// one machine has both equal to it.
+function weekBounds(rows) { const f = weekFigure(rows); return { lo: f.lo, hi: f.hi }; }
 function workdaysOf(intervals) {
   return intervals.reduce((s, iv) => s + overlap(iv.from, iv.to, iv.from, iv.to).workdays, 0);
 }
@@ -148,10 +211,10 @@ function dayBasis(p, allRows, intervals) {
   const weeks = dict();
   let sumLo = 0, sumHi = 0, anyApprox = false;
   Object.keys(byWeek).forEach(w => {
-    const wd = weekActiveDays(byWeek[w]), b = weekBounds(byWeek[w]);
-    weeks[w] = { lo: b.lo, hi: b.hi, est: wd.days, approx: wd.approx };
-    sumLo += b.lo; sumHi += b.hi;
-    if (wd.approx) anyApprox = true;
+    const f = weekFigure(byWeek[w]);
+    weeks[w] = { lo: f.lo, hi: f.hi, est: f.days, approx: f.approx, multi: f.multi, fallback: f.fallback };
+    sumLo += f.lo; sumHi += f.hi;
+    if (f.approx) anyApprox = true;
   });
   const total = p ? p.person_active_days : null;
   const bounded = !!p && anyApprox && p.machines === 1 && typeof total === 'number' && Number.isFinite(total) &&
@@ -191,17 +254,25 @@ function activeBasis(people, allRows, intervalsByPerson) {
 //   hi = min(sum of their upper bounds, total - lower bounds of the other weeks)
 // and days is the estimate held inside them; approx unless lo and hi meet.
 // Otherwise days is the sum of the weeks' figures and lo, hi are null.
+// Either way daysLo and daysHi are the least and most the weeks can hold (the
+// sums of the weeks' own bounds, or lo and hi), and `lower` says the figure is
+// a floor because machines' days may overlap (several machines in some week).
 function rangeDays(basis, weeks) {
   const chosen = dict();
   weeks.forEach(w => { chosen[w] = true; });
   if (!basis.bounded) {
-    let days = 0, approx = false;
+    let days = 0, approx = false, daysLo = 0, daysHi = 0, multi = false, fallback = false;
     Object.keys(basis.weeks).forEach(w => {
       if (!chosen[w]) return;
-      days += basis.weeks[w].est;
-      if (basis.weeks[w].approx) approx = true;
+      const e = basis.weeks[w];
+      days += e.est; daysLo += e.lo; daysHi += e.hi;
+      if (e.approx) approx = true;
+      if (e.multi) multi = true;
+      if (e.fallback) fallback = true;
     });
-    return { days, approx, lo: null, hi: null };
+    // A floor only when the sole doubt is machines' days overlapping: an older
+    // export's estimate can be off either way.
+    return { days, approx, lo: null, hi: null, daysLo, daysHi, lower: multi && !fallback };
   }
   let inLo = 0, inHi = 0, est = 0, outLo = 0, outHi = 0;
   Object.keys(basis.weeks).forEach(w => {
@@ -209,7 +280,7 @@ function rangeDays(basis, weeks) {
     if (chosen[w]) { inLo += e.lo; inHi += e.hi; est += e.est; } else { outLo += e.lo; outHi += e.hi; }
   });
   const lo = Math.max(inLo, basis.total - outHi), hi = Math.min(inHi, basis.total - outLo);
-  return { days: Math.round(Math.min(Math.max(est, lo), hi)), approx: lo !== hi, lo, hi };
+  return { days: Math.round(Math.min(Math.max(est, lo), hi)), approx: lo !== hi, lo, hi, daysLo: lo, daysHi: hi, lower: false };
 }
 // One week's figure for the heatmap, the same rule as the totals; `rows` are the
 // week's rows for a person with no basis.
@@ -219,34 +290,57 @@ function weekDaysFigure(basis, week, rows) {
   const w = weekActiveDays(rows);
   return { days: w.days, approx: w.approx };
 }
-// Active days per person over the given rows (the selected weeks' rows).
-// bases: activeBasis for the people, so a total from the export can decide the
-// estimated weeks; without one each week is its capped sum.
-function activeDaysByPerson(rows, bases) {
+// Active days per person over the given rows (the selected weeks' rows), as
+// rangeDays gives them. bases: activeBasis for the people, so a total from the
+// export can decide the estimated weeks; without one each week is its capped sum.
+function activeRangeByPerson(rows, bases) {
   const byPerson = dict();
   rows.forEach(r => (byPerson[r[W.person]] || (byPerson[r[W.person]] = [])).push(r));
   const out = dict();
   Object.keys(byPerson).forEach(person => {
     const mine = byPerson[person];
     const basis = (bases && bases[person]) || dayBasis(null, mine, null);
-    out[person] = rangeDays(basis, mine.map(r => r[W.week])).days;
+    out[person] = rangeDays(basis, mine.map(r => r[W.week]));
   });
   return out;
 }
-
-function perActiveDay(rows, bases) {
-  const days = activeDaysByPerson(rows, bases);
-  const cost = dict();
-  rows.forEach(r => { cost[r[W.person]] = (cost[r[W.person]] || 0) + (r[W.cost] || 0); });
-  return Object.keys(cost).sort().map(person => ({
-    person, cost: cost[person], days: days[person] || 0,
-    perDay: days[person] ? cost[person] / days[person] : null }));
+function activeDaysByPerson(rows, bases) {
+  const ranges = activeRangeByPerson(rows, bases), out = dict();
+  Object.keys(ranges).forEach(p => { out[p] = ranges[p].days; });
+  return out;
 }
 
-function outputByPerson(rows, prs) {
+// Spend per active day. The days are exact only where the export has them
+// (and one machine): otherwise `approx`, with the days they can be between
+// (daysLo..daysHi), so the per-day figure has a range too: perDayLo is the
+// spend over the most days possible, perDayHi over the fewest.
+function perActiveDay(rows, bases) {
+  const ranges = activeRangeByPerson(rows, bases);
+  const cost = dict();
+  rows.forEach(r => { cost[r[W.person]] = (cost[r[W.person]] || 0) + (r[W.cost] || 0); });
+  return Object.keys(cost).sort().map(person => {
+    const r = ranges[person] || { days: 0, approx: false, daysLo: 0, daysHi: 0 };
+    return { person, cost: cost[person], days: r.days, approx: r.approx, daysLo: r.daysLo, daysHi: r.daysHi,
+      perDay: r.days ? cost[person] / r.days : null,
+      perDayLo: r.daysHi ? cost[person] / r.daysHi : null,
+      perDayHi: r.daysLo ? cost[person] / r.daysLo : null };
+  });
+}
+
+// Output by person. rows: their weekly rows in the selected weeks; prs: PRs
+// opened in them; sessionCosts: [person, week, cost] of what the sessions that
+// started in each selected week cost in all. The line figures divide whole
+// sessions (a session's lines and cost both belong to the week it started in),
+// so the share of spend with line data is over the whole cost of the sessions
+// that started in these weeks, not the week's own cost (which counts requests
+// by their day and can be less than a session it only partly holds). Without
+// sessionCosts (an old payload) there is no share. A PR whose session cost the
+// export left blank has no cost per PR; it isn't a free one. Lines are
+// added + removed.
+function outputByPerson(rows, prs, sessionCosts) {
   const out = dict();
-  const get = p => out[p] || (out[p] = { prs: 0, prCost: 0, linesAdded: null, linesRemoved: null,
-    costWithLines: 0, cost: 0 });
+  const get = p => out[p] || (out[p] = { prs: 0, prsCosted: 0, prCost: 0, linesAdded: null, linesRemoved: null,
+    costWithLines: 0, cost: 0, startedCost: sessionCosts ? 0 : null });
   rows.forEach(r => {
     const o = get(r[W.person]);
     o.cost += r[W.cost] || 0;
@@ -254,16 +348,17 @@ function outputByPerson(rows, prs) {
     if (r[W.linesAdded] != null) o.linesAdded = (o.linesAdded || 0) + r[W.linesAdded];
     if (r[W.linesRemoved] != null) o.linesRemoved = (o.linesRemoved || 0) + r[W.linesRemoved];
   });
+  (sessionCosts || []).forEach(([person, , cost]) => { if (out[person]) out[person].startedCost += cost || 0; });
   prs.forEach(pr => {
     const o = get(pr.person);
     o.prs += 1;
-    o.prCost += (pr.session_cost_usd || 0) / (pr.session_prs || 1);
+    if (pr.session_cost_usd != null) { o.prsCosted += 1; o.prCost += pr.session_cost_usd / (pr.session_prs || 1); }
   });
   Object.values(out).forEach(o => {
     const lines = (o.linesAdded || 0) + (o.linesRemoved || 0);
-    o.costPerPr = o.prs ? o.prCost / o.prs : null;
+    o.costPerPr = o.prsCosted ? o.prCost / o.prsCosted : null;
     o.perKLines = o.linesAdded == null || !lines ? null : o.costWithLines / lines * 1000;
-    o.lineCoverage = o.cost ? o.costWithLines / o.cost : null;
+    o.lineCoverage = o.startedCost ? o.costWithLines / o.startedCost : null;
   });
   return out;
 }
@@ -353,6 +448,10 @@ function coveredWeek(intervals, monday) {
 // about them: covered is false and every figure is null (missing is blank,
 // never 0). Workdays and seat-cost days are the days of the range inside the
 // windows, so a gap between two exports is neither counted nor paid for.
+// A week whose rows say Claude Code had already deleted the CLI history holds
+// only Desktop work, so it says nothing about whether the seat was used: it is
+// left out of active days and workdays (seat use), and a person with no usage
+// in the range whose weeks are like that is `historyDeleted`, not idle.
 function personInRange(p, rows, limits, prs, range, prices, opts) {
   opts = opts || {};
   let calDays = 0, workdays = 0;
@@ -362,12 +461,14 @@ function personInRange(p, rows, limits, prs, range, prices, opts) {
   });
   if (!calDays) return { covered: false, idle: null, sessions: null, cost: null, subCost: null, subShare: null,
     prs: null, retries: null, limitHits: null, lockouts: null, lockedHours: null, extra: null, activeDays: null,
-    approx: false, activeLo: null, activeHi: null, workdays: 0, seatUse: null, seatCost: null, value: null,
-    lastActiveWeek: null };
+    approx: false, activeLo: null, activeHi: null, daysLo: null, daysHi: null, lower: false, workdays: 0,
+    seatUse: null, seatCost: null, value: null, lastActiveWeek: null, historyDeleted: false, gapWeeks: 0, noLogs: false };
   const out = { covered: true, sessions: 0, cost: 0, subCost: 0, retries: 0, prs: prs.length, limitHits: limits.length,
-    lockouts: 0, lockedHours: 0, extra: 0, activeDays: 0, approx: false, lastActiveWeek: null };
-  const weeks = dict();
+    lockouts: 0, lockedHours: 0, extra: 0, activeDays: 0, approx: false, lastActiveWeek: null,
+    historyDeleted: false, gapWeeks: 0, lower: false };
+  const weeks = dict(), gap = dict();
   rows.forEach(r => {
+    if (r[W.cliGap]) gap[r[W.week]] = true;
     out.sessions += r[W.sessionsStarted] || 0;
     out.cost += r[W.cost] || 0;
     out.subCost += r[W.subagentCost] || 0;
@@ -376,20 +477,35 @@ function personInRange(p, rows, limits, prs, range, prices, opts) {
     (weeks[r[W.week]] || (weeks[r[W.week]] = [])).push(r);
   });
   const basis = opts.basis || dayBasis(opts.allRows ? p : null, opts.allRows || rows, opts.intervals);
-  const days = rangeDays(basis, Object.keys(weeks));
+  const gapWeeks = Object.keys(gap);
+  const days = rangeDays(basis, Object.keys(weeks).filter(w => !gap[w]));
   out.activeDays = days.days; out.approx = days.approx; out.activeLo = days.lo; out.activeHi = days.hi;
+  out.daysLo = days.daysLo; out.daysHi = days.daysHi; out.lower = days.lower; out.gapWeeks = gapWeeks.length;
+  gapWeeks.forEach(g => personIntervals(p, opts.intervals).forEach(iv => {
+    const ov = overlap(g, isoAddDays(g, 6), iv.from, iv.to);
+    if (ov) workdays -= ov.workdays;
+  }));
   limits.forEach(l => {
     if (l.locked_out) { out.lockouts++; out.lockedHours += l.blocked_hours || 0; }
     if (l.limit_type === 'weekly') out.extra += l.usage_after_hit_usd || 0;
   });
   out.subShare = out.cost ? out.subCost / out.cost : null;
   out.idle = !(out.cost > 0);
+  // Idle needs weeks that could show use: every week with rows being deleted-history
+  // ones means nothing is known, so not idle (and no 0% seat use, no 0.0× value).
+  if (out.idle && gapWeeks.length && gapWeeks.length === Object.keys(weeks).length) {
+    out.idle = false; out.historyDeleted = true;
+  }
+  // An export from a machine with no logs, from before schema 13, covers one day with
+  // nothing in it: that says nothing about whether the seat is used.
+  out.noLogs = !!(p && p.no_usage_window && (p.window_days || 0) <= 1);
+  if (out.noLogs) out.idle = false;
   out.workdays = workdays;
-  out.seatUse = workdays ? Math.min(out.activeDays / workdays, 1) : null;
+  out.seatUse = workdays && !out.historyDeleted && !out.noLogs ? Math.min(out.activeDays / workdays, 1) : null;
   const per = prices && PER_DAY[prices.per];
   out.seatCost = per && p.seat_price != null ? p.seat_price / per * calDays : null;
   const paid = out.seatCost == null ? null : out.seatCost + out.extra;
-  out.value = paid ? out.cost / paid : null;
+  out.value = paid && !out.historyDeleted && !out.noLogs ? out.cost / paid : null;
   return out;
 }
 
@@ -399,7 +515,7 @@ function personInRange(p, rows, limits, prs, range, prices, opts) {
 // unpriced seat's usage isn't set against nothing. null when nobody has one.
 function teamValue(ranged) {
   let cost = 0, paid = 0;
-  ranged.forEach(r => { if (r.seatCost != null) { cost += r.cost || 0; paid += r.seatCost + (r.extra || 0); } });
+  ranged.forEach(r => { if (r.seatCost != null && !r.historyDeleted && !r.noLogs) { cost += r.cost || 0; paid += r.seatCost + (r.extra || 0); } });
   return paid ? cost / paid : null;
 }
 
@@ -467,10 +583,10 @@ function findings(input, today) {
   const pace = (input.people || []).filter(p => p.snapshot_in_range &&
     (p.allowance_status === 'on_pace_to_hit' || p.allowance_status === 'over'));
   if (pace.length) out.push({ rule: 'on_pace', tab: 'seats',
-    text: `${list(pace.map(displayName))} ${pace.length === 1 ? 'is' : 'are'} on pace to hit or over the weekly limit (as of their export).` });
+    text: `${list(pace.map(displayName))} ${pace.length === 1 ? 'is' : 'are'} on pace to hit the weekly limit, or already over it (as of ${pace.length === 1 ? 'their' : 'each'} export).` });
 
   const spend = repoSpend(input.weekly || [], Infinity);
-  const named = spend.repos.filter(r => r.repo !== NO_PROJECT);
+  const named = spend.repos.filter(r => !NO_PROJECTS.has(r.repo));
   if (named.length >= 2 && named[0].share >= FINDING.concentration) {
     const top = named[0];
     out.push({ rule: 'concentration', tab: 'spend',
@@ -479,25 +595,33 @@ function findings(input, today) {
 
   // Only MCP servers: a built-in tool's errors (a failing test run, a glob
   // with no match) aren't an integration a manager can fix. They stay in the
-  // Friction table.
-  const tools = dict();
-  (input.tools || []).forEach(([, , tool, integration, calls, errors]) => {
-    if (integration === 'built-in') return;  // (so no invented built-in names either)
-    const key = integrationLabel(integration, tool);
-    const t = tools[key] || (tools[key] = { calls: 0, errors: 0 });
-    t.calls += calls; t.errors += errors;
-  });
-  // Most errors first: the finding a manager reads first is the integration
-  // behind the most failures, not a small one with a high rate.
-  Object.entries(tools).filter(([, t]) => t.calls >= FINDING.minCalls && t.errors / t.calls >= FINDING.errorRate)
-    .sort((a, b) => b[1].errors - a[1].errors || a[0].localeCompare(b[0]))
-    .forEach(([key, t]) => out.push({ rule: 'integration', tab: 'habits',
-      text: `${key} fails ${Math.round(t.errors / t.calls * 100)}% of the time (${t.errors} of ${t.calls} calls).` }));
+  // Friction table. One finding for all the failing integrations, worst first
+  // (most errors, not highest rate), so several broken servers can't fill the
+  // page's six slots. A tool name a server never answered to while its other
+  // tools worked isn't counted in the server's rate (see analyzeTools).
+  const failing = analyzeTools(input.tools || []).rows
+    .filter(r => r.mcp && r.calls >= FINDING.minCalls && r.errors / r.calls >= FINDING.errorRate)
+    .sort((a, b) => b.errors - a.errors || a.label.localeCompare(b.label));
+  if (failing.length) {
+    const one = r => `${r.label} fails ${Math.round(r.errors / r.calls * 100)}% of the time (${r.errors} of ${r.calls} calls)`;
+    out.push({ rule: 'integration', tab: 'habits',
+      text: failing.length === 1 ? one(failing[0]) + '.'
+        : `${failing.length} integrations fail often: ` +
+          failing.slice(0, 3).map(r => `${r.label} ${Math.round(r.errors / r.calls * 100)}% (${r.errors} of ${r.calls} calls)`).join(', ') +
+          (failing.length > 3 ? ` and ${failing.length - 3} more.` : '.') });
+  }
 
-  const high = perActiveDay(input.weekly || [], input.dayBasis).filter(d => d.perDay != null && d.perDay > FINDING.perDay);
+  // Worst first, and only where the person is over the line even on the most
+  // active days their exports allow: a person with two machines may have worked
+  // more days than the exports can show, so a rate built on the fewest isn't
+  // enough to name them.
+  const high = perActiveDay(input.weekly || [], input.dayBasis)
+    .filter(d => d.perDay != null && d.perDayLo != null && d.perDayLo > FINDING.perDay)
+    .sort((a, b) => b.perDay - a.perDay || a.person.localeCompare(b.person));
   if (high.length) out.push({ rule: 'per_day', tab: 'spend',
-    text: `${list(high.map(d => `${name(d.person)} (${money(d.perDay)}/day)`))} spent more per active day than ` +
-          `Anthropic's 90th percentile of $${BENCHMARK.p90} (list price).` });
+    text: `${list(high.map(d => `${name(d.person)} (${d.approx ? '≈' : ''}${money(d.perDay)}/day` +
+      `${d.approx ? `, at least ${money(d.perDayLo)}` : ''})`))} spent more per active day than ` +
+          `Anthropic's 90th percentile of $${BENCHMARK.p90} (list price, across enterprise deployments).` });
 
   const ctx = dict();
   (input.health || []).forEach(r => {

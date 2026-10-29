@@ -187,26 +187,28 @@
       <div class="legend" id="skillWeeklyLegend"></div>
     </div>
     <div class="card">
-      <div class="card-head"><h2>Skill &times; project (cost)</h2></div>
+      <div class="card-head"><h2 id="skillHeatmapTitle">Skill &times; project (tokens)</h2></div>
       <div id="skillHeatmap" class="heatmap"></div>
     </div>
     <div class="card">
       <div class="card-head"><h2>Skills table</h2></div>
       <div class="table-scroll">
         <table class="data-table" id="skillsTable">
-          <thead><tr><th>Skill</th><th class="num">Invocations</th><th class="num">Requests</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Sessions</th></tr></thead>
+          <thead><tr><th>Skill</th><th class="num" title="Times the skill was started: by Claude through the Skill tool, or by you with a slash command">Invocations</th><th class="num" title="Requests Claude Code tagged with this skill">Requests</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num" title="Sessions where the skill was invoked or ran requests">Sessions</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+      <p class="foot-note" id="skillsFootnote"></p>
     </div>
   </div>
 
   <!-- ============ TOOLS & ERRORS ============ -->
   <div class="tabpanel" id="tab-tools">
     <div class="card"><div class="card-head"><h2>Calls by tool (top 15)</h2></div><div class="chart-box tall"><canvas id="toolCallsChart"></canvas></div></div>
-    <div class="card"><div class="card-head"><h2>Errors by tool (&ge;10 calls)</h2></div><div class="chart-box tall"><canvas id="toolErrorRateChart"></canvas></div>
+    <div class="card"><div class="card-head"><h2>Errors by tool (top 15, &ge;10 calls)</h2></div><div class="chart-box tall"><canvas id="toolErrorRateChart"></canvas></div>
       <p class="foot-note">Most errors first; colour is the error rate (green under 5%, amber under 15%, red above). Hover for the rate and share of all errors. <span id="toolErrorNote"></span></p></div>
-    <div class="card"><div class="card-head"><h2>MCP server rollup</h2></div><div class="chart-box short"><canvas id="mcpServerChart"></canvas></div></div>
+    <div class="card"><div class="card-head"><h2>MCP server rollup</h2></div><div class="chart-box short"><canvas id="mcpServerChart"></canvas></div>
+      <p class="foot-note" id="mcpNote"></p></div>
     <div class="card"><div class="card-head"><h2>Errors over time</h2><span class="foot-note" style="margin:0;" id="grainNoteTools"></span></div><div class="chart-box short"><canvas id="errorsWeeklyChart"></canvas></div></div>
     <div class="card">
       <div class="card-head"><h2>Tools table</h2></div>
@@ -238,11 +240,13 @@
       <div class="card-head"><h2>Subagents table</h2></div>
       <div class="table-scroll">
         <table class="data-table" id="agentsTable">
-          <thead><tr><th>Date</th><th>Session</th><th>Type</th><th class="num">Depth</th><th>Description</th><th>Models</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+          <thead><tr><th title="The day the subagent started">Date</th><th>Session</th><th>Type</th><th class="num">Depth</th><th>Description</th><th>Models</th><th class="num" title="The subagent's whole run, on every model">Tokens</th><th class="num" title="The subagent's whole run, on every model">Cost</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+      <p class="foot-note" id="agentsTableNote"></p>
     </div>
+    <p class="foot-note" id="agentsFootnote"></p>
   </div>
 
   <!-- ============ SESSIONS ============ -->
@@ -250,14 +254,15 @@
     <div class="card"><div class="card-head"><h2>Active time vs cost</h2></div><div class="chart-box"><canvas id="sessionScatterChart"></canvas></div></div>
     <div class="card">
       <div class="card-head"><h2>Sessions</h2><div class="toggle-row"><button id="forkToggle" style="display:none;"></button></div></div>
+      <p class="foot-note" id="sessionsCaption" style="margin-top:0"></p>
       <div class="table-scroll">
         <table class="data-table" id="sessionsTable">
           <thead><tr>
-            <th data-sort="title">Title</th><th data-sort="project">Project</th><th data-sort="start">Start</th>
-            <th data-sort="active_ms" class="num">Active</th><th>Models</th><th data-sort="requests" class="num">Reqs</th>
-            <th data-sort="est_total" class="num">Est&nbsp;cost</th><th data-sort="cli_cost" class="num">CLI&nbsp;cost</th>
-            <th data-sort="n_subagents" class="num">Sub</th><th data-sort="tool_calls" class="num">Tools</th>
-            <th data-sort="lines_added" class="num">Lines&nbsp;+/-</th><th>PRs</th><th>Habits</th>
+            <th data-sort="title">Title</th><th data-sort="project">Project</th><th data-sort="start" title="When the session's own work began. A fork or resume shows its own first request, not the copied history before it.">Start</th>
+            <th data-sort="active_ms" class="num" title="Active time, whole session: the time between its records, leaving out gaps over 5 minutes (idle time)">Active</th><th>Models</th><th data-sort="requests" class="num" title="Requests in the whole session, subagents included">Reqs</th>
+            <th data-sort="est_total" class="num" title="Estimated cost inside the selected dates and models; the line under it gives the whole session when that is more">Est&nbsp;cost</th><th data-sort="cli_cost" class="num" title="Claude Code's own cost counter for the whole session, where it kept one">CLI&nbsp;cost</th>
+            <th data-sort="n_subagents" class="num" title="Subagents the session started">Sub</th><th data-sort="tool_calls" class="num" title="Tool calls in the whole session, main conversation and subagents (errors in brackets)">Tools</th>
+            <th data-sort="lines_added" class="num" title="Lines added and removed by the session's Edit and Write calls, whole session">Lines&nbsp;+/-</th><th>PRs</th><th>Habits</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -269,6 +274,7 @@
   <div class="tabpanel" id="tab-habits">
     <div class="habits-body">
       <div class="stats" id="habitTiles"></div>
+      <p class="foot-note" id="habitPopulations"></p>
       <div class="card">
         <div class="card-head"><h2>Main-conversation spend by context size</h2><span class="foot-note" style="margin:0;" id="grainNoteHabits"></span></div>
         <div class="chart-box"><canvas id="habitContextChart"></canvas></div>
@@ -290,7 +296,7 @@
       <div class="card">
         <div class="card-head"><h2>Checking work</h2></div>
         <div class="stats" id="habitCheckTiles"></div>
-        <p class="foot-note">Counted from the shell commands Claude ran, classified as test, lint, build, commit or PR. Only the category is kept, never the command. Anthropic's advice: give Claude a check it can run, and don't ship what you can't verify.</p>
+        <p class="foot-note">Counted from the shell commands Claude ran, classified as test, lint, build, commit or PR: these are shell checks only. Browser checks (screenshots), Stop hooks, <code>/verify</code> and <code>/code-review</code> can't be seen as shell commands and aren't counted, so a session can be well checked and still read &ldquo;unchecked&rdquo; here. Only the category is kept, never the command. Anthropic's best-practices page: &ldquo;Give Claude a check to run&rdquo;.</p>
       </div>
       <div class="two-col">
         <div class="card">

@@ -84,7 +84,23 @@ is used and the days only the other covered are left out of both active days
 and workdays. Across machines, the busiest machine's figure is used: exports
 carry a count of days, not the days themselves, so a day worked on both
 machines can't be told from two days. That makes seat use a floor for someone
-who splits their week across machines, never a double count.
+who splits their week across machines, never a double count: `team-people.csv`
+says so in `seat_use_is_floor` (`yes` for anyone with more than one machine), and
+the page shows "≥" before it.
+A week exported in pieces (an export to Wednesday, another from Thursday) has
+its pieces' active days added up on every row of that week, and its days in the
+window taken from the pieces' windows together, so the week is whole when the
+pieces are, even when each piece holds different projects.
+`team-people.csv` gives `window_days` (the days their exports cover, each once) and
+`gap_days` (the days between two stretches that no export covers); the People
+table lists each stretch and the size of the gap, and the merge notes it ("their
+exports leave out 2026-09-07 .. 2026-09-20"). Days in a gap are unknown: not idle,
+not paid for.
+An export from a machine with **no logs** (Claude Code deletes CLI transcripts
+after 30 days) holds no usage, and covers only the short default window the tool
+gives it (30 days from schema 13, one day before). The merge names the person and
+says to re-export with `--since`, since weeks before the window show as not
+covered, and the page doesn't call a one-day empty export an idle seat.
 These are the whole-export-window figures that `team-people.csv` and
 `merge-report.txt` carry. On the dashboard, seat use, last active and idle are
 worked out for the selected weeks instead (see **People** under People & data, below),
@@ -106,6 +122,13 @@ when a copied folder gave two machines one id.
 
 ## Known limits
 
+**Extra usage** is counted only after a *weekly* limit hit, until its reset. Whether usage after a
+shorter (5-hour) limit is billed as extra usage isn't something the logs show, so it isn't counted
+and the figure may understate. When one person's two machines both saw a weekly-limit episode, each
+measures its own usage before and after its own first notice and the merge adds them: a machine that
+hit the limit later than the other has some usage after the account's hit counted as before, so the
+extra usage can be understated too (a floor, like seat use across machines).
+
 With the same session id in two project folders, deleting one copy between exports can make the team sessions sheet list that session twice (the second copy is exported as `<id>#2`, and the first export's `<id>` row stays); the summary stays correct.
 
 The merged sessions sheet can list both an original session and its later continuation (a resume or fork, which holds the original's work under another id); the summary stays correct.
@@ -119,7 +142,11 @@ Work near a week boundary can still be counted in two weeks when one machine is 
 Every file is checked as it's read. One that fails is named in the notices and
 in `merge-report.txt` with the reason, and its **whole export** is skipped: a
 zip if it came in a zip, otherwise every loose CSV of that export. Half an
-export would show the person with $0, or with sessions but no cost.
+export would show the person with $0, or with sessions but no cost. It is **one
+notice per export**, however many of its files failed (a person's six Excel-saved
+CSVs are one notice naming them, the first reason, and the fix), and the dashboard
+lists it under **Exports merged** as "skipped", so the person's absence from every
+figure is explained.
 
 | Skipped | Why |
 |---|---|
@@ -159,7 +186,7 @@ and text that could run as a formula is quoted.
 | `team-people.csv` | One row per person: seat and usage tier, seat use, last active, idle flag, cost, subagent share, PRs, API retries, limit hits, lock-outs, hours locked out, extra usage, this week's allowance status, history and export provenance, value per seat, and how many machines their exports came from |
 | `team-prs.csv` | Every PR once, by URL, with the repo it went to |
 | `team-tools.csv` | Tool calls and errors by person, week, project and tool, with the MCP integration each tool belongs to |
-| `merge-report.txt` | Every export read, every note above, the extra-usage run-rate, and value per seat |
+| `merge-report.txt` | Every export read, every note above, the extra-usage run-rate (computed from the weeks the exports cover, as the dashboard does: a week in a gap between exports isn't a $0 week), who is over or on pace to hit the weekly limit this week (only people whose export ends in the current week, "as of their export"), and value per seat in USD. It doesn't say the exports are current: how old they are depends on the day you read it, which the Overview's "How current" shows |
 
 ## The team dashboard
 
@@ -173,21 +200,32 @@ People table.
 
 **Overview**
 - **Tiles**: all of them follow the selected weeks: People (active, with no
-  activity in these weeks, and not covered by these weeks), median seat use,
+  activity in these weeks, not covered by these weeks, and those whose CLI
+  history was deleted for all the selected weeks or whose export holds no logs:
+  those are not idle, since nothing shows whether they used the seat), median seat use,
   Usage, Limit hits, Locked out, Extra usage and value per seat (the team's
   figure, with the median seat's below it).
 - **What stands out**: up to six findings, each linking to the tab with the
   detail (see below).
-- **Team spend by week**: list-price cost by person, with a line for the people
-  who used Claude Code that week.
+- **Team spend by week**: list-price cost by person (the 8 biggest are named, the
+  rest are Other, and people with no spend aren't in the legend), with a line for
+  the people who used Claude Code that week. A week outside a person's exports is
+  left blank (unknown, not $0), and the newest week is marked "(part)" when the
+  exports end before its Sunday.
 - **Model use by week**: everyone selected, added together, stacked by the exact
   model each request ran on ("Opus 5.5", "Sonnet 5.5"; a dated snapshot or 1M-context
   variant counts as its model), as list-price cost or output tokens. The 8 biggest
-  models over the selected weeks are named and the rest are Other.
+  models over the selected weeks are named and the rest are Other (a ninth is named
+  rather than made an "Other" of one). Output tokens are only what the model
+  wrote: Anthropic's costs page counts the whole conversation toward usage, so they
+  aren't a measure of the allowance.
 - **How current the data is**: one row per person and machine (a second
   machine's old export isn't hidden by the first one's fresh one) with its
   export date, window and `bucket_zone`. A machine whose latest export is more
   than 7 days old, counted in whole days from today's UTC midnight, is flagged.
+  Export times are shown as the exporting machine wrote them (date, year, time and
+  UTC offset), not converted to the viewer's zone, so they sit beside the export's
+  own days and weeks.
 
 **Spend**
 - **Spend by repository**: the top 8 repositories by cost, then "Other (N repos)"
@@ -196,7 +234,8 @@ People table.
   session counts to the repo of its folder's git `origin`, else to the folder;
   spend tied to no folder is "(no project)".
 - **Repository spend by week**: the same, stacked by week.
-- **Cost by model, by person**: cost by model, main vs subagent, or output tokens.
+- **Cost by model, by person**: cost by exact model (as the Overview's model chart
+  is; the 8 biggest are named and the rest are Other), main vs subagent, or output tokens.
 - **Spend per active day**: cost in the selected weeks divided by active days,
   against Anthropic's reported $13 average and $30 for 90% of users. Active
   days per week are the exact `week_active_days` (schema 11) where the export
@@ -204,12 +243,23 @@ People table.
   (the export's own total and the per-week bounds, for one machine) or, failing
   that, the projects' days added up, capped at the days the week has in the
   export window, because the count sums across projects: an upper bound on days,
-  so spend per day is a lower bound. List price.
+  so spend per day is a lower bound. With two machines the exports carry day
+  counts, not the days, so a week has between the busier machine's days and both
+  added together (at most 7). Where the days aren't exact the table shows "≈", the
+  days they can be between and the per-day range they give. A person is marked
+  above the 90th percentile (and the finding names them) only if even the most
+  days possible leave them above $30. The finding lists the worst first. List
+  price.
 
 **Seats & limits**
 - **Seat use by week**: a person × week heatmap of cost, requests or active
   days. Part-weeks at the edge of an export are outlined; weeks whose CLI history
-  was already deleted are hatched, so a pale cell isn't mistaken for a quiet one.
+  was already deleted are hatched, so a pale cell isn't mistaken for a quiet one,
+  and a week that none of the person's exports covers is dotted ("not covered by
+  their exports": unknown, unlike a blank cell, which is a covered week with no
+  activity). A week is a part-week only if every machine's piece of it was cut
+  short; a second machine that covers it whole makes it whole. In the Active days
+  view an estimated cell shows "≈".
   Active days follow the same per-week rule as spend per active day: the exact
   `week_active_days` where present; else, for one machine, the estimate the
   export's own total and the week's bounds give (a week that isn't pinned shows
@@ -265,16 +315,28 @@ People table.
   10% line; the rest have no sourced line and are a profile. Hover a column
   header for what it means and when a high or low figure is fine. Someone whose
   export covers the weeks but who didn't use Claude Code in them isn't listed.
-  Exports from before schema 7 have no habit data and aren't counted as zeros.
+  Exports from before schema 7 have no habit data and aren't counted as zeros:
+  someone who used Claude Code but has none is named under the table ("N of the M
+  people who used Claude Code have habit data"). A flagged share is judged by the
+  figure as shown (9.96% reads "10.0%" and is flagged).
   Exports from before schema 10 don't carry the over-500k cost: the context tax
   reads "—" with a "re-export to measure" hint, and no context finding fires for
   them. A person with some weeks measured and some not is
   judged on the measured weeks only, in the table and in the finding alike.
 - **Friction by integration**: tool errors across the selected people, most
   errors first (with the rate), MCP tools grouped by server, for anything called
-  at least 20 times, with a People column naming who hit the errors. A built-in
-  tool name that never once succeeded is one the model made up and is left out;
-  an MCP tool that never succeeded is a broken integration and stays. Our
+  at least 20 times. Every MCP server that qualifies is listed (the finding links
+  here), then the built-in tools; past 12 rows the rest are under "Show more".
+  The People column names only who hit errors, with how many each. Refusals (a
+  permission denied, a hook that blocked a call) are not errors. Whether a name is
+  "made up or unavailable" is decided by name, not by outcome: a tool name that
+  isn't a Claude Code built-in (the documented tool list, plus the older names) and
+  never once succeeded is left out and listed under the table. A real built-in that
+  fails every time (a WebSearch blocked by policy) stays. An MCP tool name that
+  never succeeded while its server's other tools did (a misspelled name) is listed
+  separately and not counted in the server's rate; a server whose every tool
+  failed stays whole as a broken integration. A person whose exports predate the
+  tools file is named, not counted as error-free. Our
   suggestion, not Anthropic's: a tool that fails for everyone may be an
   integration or permission worth checking. Claude Code's own tools
   (task, schedule, plan-mode and worktree tools and the like) sit in a collapsed
@@ -287,9 +349,15 @@ People table.
   another repo's folder, and the cost of the sessions that opened them (shared
   evenly across a session's PRs).
 - **Output by person**: PRs, cost per PR, lines added and removed, cost per 1k
-  lines, and the share of spend that has line data. Cost per 1k lines divides
-  only the spend of sessions that recorded lines, so it isn't inflated by
-  sessions that didn't. Blank where nothing was recorded, never 0.
+  lines (added plus removed), and the share of spend that has line data. Cost per
+  1k lines divides only the cost of sessions that recorded lines, so it isn't
+  inflated by sessions that didn't. The share is that cost over what all the
+  sessions that started in the selected weeks cost in all (a session counts whole,
+  in the week it started: the export's `cost_with_line_data_usd` is whole sessions,
+  where a week's own cost counts requests by day), so it can't pass 100%. Blank
+  where nothing was recorded, never 0. A PR with no session cost in its export
+  has no cost, not a free one, and "Opened from another folder" reads "?" when the
+  export didn't say.
 
 **People & data**
 - **People**: one row per person, with display names and readable tiers. The
@@ -308,7 +376,11 @@ People table.
   active days"). With two machines, or a total that doesn't cover the same
   workdays as the export windows, the fallback is the projects' days capped at
   that week's days in the window, shown with "≈" and a hint to re-export. Across
-  a person's machines the larger figure is used. Seat cost is the seat price per
+  a person's machines the exports give day counts, not days, so the figure is the
+  busier machine's, a floor, shown with "≥" and a tooltip with the range up to both
+  machines' days added. A week whose CLI history is deleted is left out of seat use
+  (numerator and denominator), and a person whose weeks are all like that has "history
+  deleted" and no seat use or multiple, and isn't idle. Seat cost is the seat price per
   day times the calendar days of the selected weeks inside the exports' windows.
   Coverage is each export's own window (overlapping or touching windows merge),
   not the span from the first export's start to the last one's end: days between
@@ -331,11 +403,11 @@ these weeks."
 |---|---|---|
 | Lock-out | Any locked-out episode in range: one finding listing everyone locked out with their hours, worst first ("Ann (59.0 h), Bo (3.0 h) were locked out until a limit reset."; more than three, then "and N more"), so a bad week can't fill the list | Seats & limits |
 | On pace to hit | A person's allowance status is on pace to hit, or over, and the selected weeks include the week of their export | Seats & limits |
-| Spend concentration | One repository is 40% or more of spend, with at least two repositories. "(no project)" spend is never the repository named | Spend |
-| Failing integration | An MCP server with at least 20 calls and an error rate of 10% or more. Built-in tools (Bash test failures, a glob with no match) never fire it: they aren't an integration a manager fixes, and stay visible in the Friction table | Habits |
-| High spend per active day | A person above $30 per active day (Anthropic's 90th percentile), at list price | Spend |
+| Spend concentration | One repository is 40% or more of spend, with at least two repositories (this tool's threshold). "(no project)" and "(unknown project)" spend is never the repository named. A folder that isn't a git repo is named with whose it is, so two people's unrelated `~/work/app` folders don't merge | Spend |
+| Failing integration | MCP servers with at least 20 calls and an error rate of 10% or more (this tool's thresholds): one finding for all of them, worst (most errors) first. Built-in tools (Bash test failures, a glob with no match) never fire it: they aren't an integration a manager fixes, and stay visible in the Friction table. A tool name that never succeeded while its server's other tools did isn't in the server's rate | Habits |
+| High spend per active day | A person above $30 per active day (Anthropic's 90th percentile across enterprise deployments), at list price, even at the most active days their exports allow; worst first, "≈" with the lowest rate where the days aren't exact | Spend |
 | Context tax | A person with 10% or more of main spend on requests over 500k tokens | Habits |
-| Idle seat | No Claude Code activity in the selected weeks. Only people whose export window overlaps those weeks are counted: someone it doesn't cover is not idle | Seats & limits |
+| Idle seat | No Claude Code activity in the selected weeks. Only people whose export window overlaps those weeks are counted: someone it doesn't cover is not idle, and neither is someone whose CLI history was deleted for all of them, or whose export holds no logs | Seats & limits |
 | Stale export | A person with any machine whose latest export's `exported_at` is more than 7 days before today (from UTC midnight; the freshness badge says "more than N days old" from the same age); named once | Overview |
 
 Filters: people, and a week range. The week range applies to every usage figure,
@@ -410,10 +482,15 @@ or CSV you pass directly — or pass `--seat-prices FILE` to either command:
 Replace the zeros with your real prices — a file still holding a zero is rejected,
 so the unedited template can never produce a value figure. Each person is priced by their **usage
 tier** (`rate_limit_tier`, e.g. `default_claude_max_5x`) if it's listed, then
-their **seat tier** (`seat_tier`), then `default`. `per` is `month` or `year`.
+their **seat tier** (`seat_tier`), then `default`; an Enterprise seat (a seat tier
+named `enterprise_*`) goes the other way, seat tier first, since the consumer rate-limit
+tier that comes with it isn't what the organisation pays. `per` is `month` or `year`.
+Prices must be in **USD**, the currency usage is priced in: a file whose `currency` is
+anything else is rejected with a notice saying so (there is no conversion), and every
+seat cost on the page and in the report is in dollars.
 Without the file, the value columns are blank and the dashboard says so. A file
 that can't be read, or a tier with no price and no `default`, is reported
-rather than guessed around.
+rather than guessed around (the notice names the tiers that need a price).
 
 Two caveats. Seat cost counts every day of the selected weeks inside the
 person's export window, so someone whose CLI history was deleted shows less

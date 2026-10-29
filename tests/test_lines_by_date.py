@@ -1,8 +1,8 @@
-"""Lines added/removed come from the CLI's cost-state, a running counter for the
-whole session. Counting a session's final total in every date range it touched
-put a six-week session's 78k lines into the last 7 days as well as into 30, 90
-and All. These tests pin each step of the counter to when it was recorded, so a
-date range gets only the lines written inside it."""
+"""Lines added/removed are counted per edit, from the diff in each Edit/Write
+result, and dated by the edit. (They used to come from the CLI's cost-state
+counter, which has no time of its own, so most of a session's lines landed on
+the day it ended.) These tests pin each edit to the day it was made, so a date
+range gets only the lines written inside it."""
 import datetime
 import json
 import os
@@ -20,10 +20,17 @@ def _req(sid, ts, rid):
             "model": "claude-sonnet-5", "usage": {"input_tokens": 10, "output_tokens": 20}}}
 
 
-def _state(sid, start, cost, added, removed):
-    # Real cost-state records carry no timestamp of their own.
-    return {"type": "cost-state", "sessionId": sid, "totalCostUSD": cost,
-            "totalLinesAdded": added, "totalLinesRemoved": removed, "startTime": start}
+def _edit(sid, ts, tuid, added, removed):
+    """An Edit call and its result, whose diff has `added` + lines and `removed` - lines."""
+    call = _req(sid, ts, "e-" + tuid)
+    call["message"]["content"] = [{"type": "tool_use", "id": tuid, "name": "Edit",
+                                   "input": {"file_path": "/Users/x/proj/a.py"}}]
+    result = {"type": "user", "uuid": "u-" + tuid, "sessionId": sid, "timestamp": ts,
+              "message": {"role": "user", "content": [
+                  {"type": "tool_result", "tool_use_id": tuid, "content": "ok"}]},
+              "toolUseResult": {"structuredPatch": [
+                  {"lines": [" context"] + ["+new"] * added + ["-old"] * removed}]}}
+    return [call, result]
 
 
 def _scan(files):
@@ -33,7 +40,7 @@ def _scan(files):
     for sid, lines in files.items():
         with open(os.path.join(folder, sid + ".jsonl"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(json.dumps(l) for l in lines) + "\n")
-    # UTC: the test is about which day a step lands on, not the machine's zone.
+    # UTC: the test is about which day an edit lands on, not the machine's zone.
     payload = scan(tmp.name, cache=FileCache(os.path.join(tmp.name, "c.json")), tz=datetime.timezone.utc)
     tmp.cleanup()
     return payload
@@ -43,16 +50,14 @@ class TestLinesByDate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.payload = _scan({
-            # One long session: 100 lines by Mar 2, 250 by Mar 20.
-            "long": [_req("long", "2026-03-02T12:00:00.000Z", "a"),
-                     _state("long", 111, 1.0, 100, 1),
-                     _req("long", "2026-03-20T12:00:00.000Z", "b"),
-                     _state("long", 111, 2.0, 250, 5)],
-            # A branch that carried on the same counter: its first snapshot
-            # repeats the parent's, then it adds 30 lines on Mar 21.
-            "branch": [_req("branch", "2026-03-21T12:00:00.000Z", "c"),
-                       _state("branch", 111, 2.0, 250, 5),
-                       _state("branch", 111, 2.1, 280, 5)],
+            # One long session: 100 lines on Mar 2, 150 more on Mar 20.
+            "long": [_req("long", "2026-03-02T12:00:00.000Z", "a")]
+                    + _edit("long", "2026-03-02T12:01:00.000Z", "t1", 100, 1)
+                    + [_req("long", "2026-03-20T12:00:00.000Z", "b")]
+                    + _edit("long", "2026-03-20T12:01:00.000Z", "t2", 150, 4),
+            # A session that carried on from it: 30 lines on Mar 21.
+            "branch": [_req("branch", "2026-03-21T12:00:00.000Z", "c")]
+                      + _edit("branch", "2026-03-21T12:01:00.000Z", "t3", 30, 0),
         })
         cls.lines = cls.payload["lines"]
 
@@ -63,18 +68,18 @@ class TestLinesByDate(unittest.TestCase):
             out[bucket[:10]] = (a + added, r + removed)
         return out
 
-    def test_each_step_lands_on_the_day_it_was_recorded(self):
+    def test_each_edit_lands_on_the_day_it_was_made(self):
         self.assertEqual(self.by_day(), {"2026-03-02": (100, 1), "2026-03-20": (150, 4),
                                          "2026-03-21": (30, 0)})
 
-    def test_steps_add_up_to_the_sessions_total(self):
+    def test_edits_add_up_to_the_sessions_total(self):
         session = {s["id"]: s for s in self.payload["sessions"]}["long"]
-        self.assertEqual(session["lines_added"], 280)
-        self.assertEqual(sum(r[2] for r in self.lines), 280)
-        self.assertEqual(sum(r[3] for r in self.lines), 5)
+        self.assertEqual((session["lines_added"], session["lines_removed"]), (250, 5))
+        self.assertEqual(session["lines_source"], "edits")
+        self.assertEqual(sum(r[2] for r in self.lines if r[1] == "long"), 250)
 
-    def test_steps_sit_on_the_session_that_shows_the_counter(self):
-        self.assertEqual({r[1] for r in self.lines}, {"long"})
+    def test_rows_sit_on_the_session_that_made_the_edit(self):
+        self.assertEqual({r[1] for r in self.lines}, {"long", "branch"})
 
     def test_pull_requests_come_newest_first(self):
         def pr(sid, ts, n):
@@ -86,8 +91,10 @@ class TestLinesByDate(unittest.TestCase):
                                pr("s", "2026-03-02T15:00:00.000Z", 2)]})
         self.assertEqual([p["number"] for p in payload["prs"]], [3, 2, 1])
 
-    def test_no_counter_no_rows(self):
-        self.assertEqual(_scan({"plain": [_req("plain", "2026-03-02T12:00:00.000Z", "z")]})["lines"], [])
+    def test_no_edit_no_rows_and_no_total(self):
+        payload = _scan({"plain": [_req("plain", "2026-03-02T12:00:00.000Z", "z")]})
+        self.assertEqual(payload["lines"], [])
+        self.assertIsNone(payload["sessions"][0]["lines_added"])
 
 
 DASHBOARD = ["static/filters.js", "static/habits.js", "static/app.js"]
@@ -119,14 +126,13 @@ class TestEnvTab(unittest.TestCase):
         html = run_js(DASHBOARD, _env(LINES, frm="2026-03-01") + "out(el('envStatTiles').innerHTML)")
         self.assertIn("+280", html)
 
-    def test_tile_says_when_line_counts_start(self):
-        # The date is written in the reader's own locale ("Mar 2, 2026" in the
-        # US, "2 Mar 2026" in the UK), so the expected text is formatted the
-        # same way rather than spelled out.
-        html, first = run_js(DASHBOARD, _env(LINES, frm="2026-02-01")
-                             + "out([el('envStatTiles').innerHTML, prettyDate('2026-03-02')])")
-        self.assertIn("2026", first)
-        self.assertIn(f"recorded from {first}", html)
+    def test_tile_says_lines_come_from_edits_not_from_a_count_of_sessions(self):
+        # P3 OE-2: lines are counted per edit, so the "from N of M sessions with a
+        # counter" framing (and "recorded from <date>") no longer applies.
+        html = run_js(DASHBOARD, _env(LINES, frm="2026-02-01") + "out(el('envStatTiles').innerHTML)")
+        self.assertIn("from the edits Claude made in these dates", html)
+        self.assertNotIn("recorded from", html)
+        self.assertNotIn("sessions", html)
 
     def test_pull_requests_newest_first(self):
         prs = [{"session_id": "long", "date": d, "repo": "o/r", "number": n, "url": f"https://x/{n}"}

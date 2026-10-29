@@ -30,6 +30,19 @@ def _state(sid, ts, start, cost, lines):
                                                "costUSD": cost}}}
 
 
+def _edit(sid, ts, tuid, added, removed=0):
+    """An Edit call and its result, whose diff has `added` + lines and `removed` - lines."""
+    call = _req(sid, ts, "e-" + tuid)
+    call["message"]["content"] = [{"type": "tool_use", "id": tuid, "name": "Edit",
+                                   "input": {"file_path": "/Users/x/proj3/a.py"}}]
+    result = {"type": "user", "uuid": "u-" + tuid, "sessionId": sid, "timestamp": ts,
+              "cwd": "/Users/x/proj3",
+              "message": {"role": "user", "content": [
+                  {"type": "tool_result", "tool_use_id": tuid, "content": "ok"}]},
+              "toolUseResult": {"structuredPatch": [{"lines": [" c"] + ["+n"] * added + ["-o"] * removed}]}}
+    return [call, result]
+
+
 class TestSharedCounters(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,13 +52,16 @@ class TestSharedCounters(unittest.TestCase):
         files = {
             # The long session: most of the requests.
             "sess-parent": [_req("sess-parent", f"2026-03-02T10:0{i}:00.000Z", f"p{i}") for i in range(3)]
+                           + _edit("sess-parent", "2026-03-02T10:04:00.000Z", "t-p", 100, 1)
                            + [_state("sess-parent", "2026-03-02T10:05:00.000Z", 111, 1.00, 100)],
             # A short branch that carried on the same counter: its snapshot
             # includes everything the parent did.
             "sess-branch": [_req("sess-branch", "2026-03-02T11:00:00.000Z", "b0")]
+                           + _edit("sess-branch", "2026-03-02T11:00:30.000Z", "t-b", 20)
                            + [_state("sess-branch", "2026-03-02T11:01:00.000Z", 111, 1.20, 120)],
             # Unrelated: its own counter.
             "sess-other": [_req("sess-other", "2026-03-03T09:00:00.000Z", "o0")]
+                          + _edit("sess-other", "2026-03-03T09:00:30.000Z", "t-o", 5, 1)
                           + [_state("sess-other", "2026-03-03T09:01:00.000Z", 222, 0.50, 5)],
         }
         for sid, lines in files.items():
@@ -62,10 +78,11 @@ class TestSharedCounters(unittest.TestCase):
     def test_counter_shows_once_on_the_session_that_did_the_work(self):
         parent, branch = self.s["sess-parent"], self.s["sess-branch"]
         self.assertEqual(parent["cli_cost"], 1.20, "the counter's latest snapshot")
-        self.assertEqual(parent["lines_added"], 120)
+        # Lines come from each session's own edits, not from the shared counter.
+        self.assertEqual(parent["lines_added"], 100)
         self.assertEqual(parent["cli_counter_shared_with"], ["sess-branch"])
         self.assertIsNone(branch["cli_cost"])
-        self.assertIsNone(branch["lines_added"])
+        self.assertEqual(branch["lines_added"], 20)
         self.assertEqual(branch["cli_counted_in"], "sess-parent")
 
     def test_unshared_counters_are_untouched(self):
@@ -85,7 +102,7 @@ class TestSharedCounters(unittest.TestCase):
         est_group = sum(r[13] for r in self.payload["usage"] if r[1] in ("sess-parent", "sess-branch"))
         self.assertAlmostEqual(model["est_cost"], est_group, places=6)
 
-    def test_export_sums_no_longer_double_count(self):
+    def test_export_sums_count_every_edit_once(self):
         ctx = export_mod.build_context(self.payload, PERSON)
         summary = [dict(zip(export_mod.SUMMARY_COLUMNS, r))
                    for r in export_mod.summary_rows(self.payload, PERSON, ctx=ctx)]

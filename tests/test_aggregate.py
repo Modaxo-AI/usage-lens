@@ -260,10 +260,10 @@ class TestParsedMetadata(unittest.TestCase):
         cls.payload = _payload()
         cls.span = next(s for s in cls.payload["sessions"] if s["id"] == "sess-span")
 
-    def test_mode_records_feed_permission_modes(self):
-        # `mode` is the common form; reading only `permission-mode` left most
-        # sessions with an empty chart.
-        self.assertEqual(self.span["permission_modes"], {"normal": 1})
+    def test_a_mode_record_is_not_a_permission_mode(self):
+        # `mode` is the editor's input mode ("normal"), not a permission mode;
+        # the real ones come from user records and `permission-mode` records.
+        self.assertEqual(self.span["permission_modes"], {})
 
     def test_continued_in_reads_the_real_field(self):
         self.assertEqual(self.span["continued_in"], "sess-next-abc")
@@ -467,7 +467,13 @@ class TestActiveTimeWithoutCopies(unittest.TestCase):
     def test_fixture_sessions_keep_their_active_time(self):
         by_id = {s["id"]: s for s in _payload()["sessions"]}
         self.assertEqual({k: v["active_ms"] for k, v in by_id.items()},
-                         {"sess-fork-1": 3000, "sess-main-1": 11000,
+                         # A fork copy keeps only records with a uuid its original
+                         # lacks (TS-12); this fixture's carry none, so it has no
+                         # active time of its own.
+                         {"sess-fork-1": 0, "sess-main-1": 11000,
                           "sess-main-2": 1000, "sess-span": 8000})
-        for s in by_id.values():
-            self.assertEqual(s["active_start"], s["start"])
+        for k, s in by_id.items():
+            if k == "sess-fork-1":
+                self.assertIsNone(s["active_start"])  # nothing of its own (TS-12)
+            else:
+                self.assertEqual(s["active_start"], s["start"])
