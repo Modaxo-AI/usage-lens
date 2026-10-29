@@ -38,6 +38,14 @@ const MODE_LABELS = {
 };
 const EXPIRED_MISS = 'previous_message_not_found';
 
+// A built-in tool name that never once succeeded is one the model made up (a
+// lowercase `bash`): no such tool exists, so nothing can be fixed. An MCP tool
+// that never succeeded is different: a broken integration, worth showing.
+// Used wherever tools are ranked by their errors (here and app.js).
+function inventedTool(name, t) {
+  return !String(name).startsWith('mcp__') && t.calls > 0 && t.errors >= t.calls;
+}
+
 function habitsAvailable() { return !!(PAYLOAD && PAYLOAD.health); }
 
 // ---------- windows and rows ---------------------------------------------- //
@@ -141,12 +149,13 @@ function habitMeasures(w) {
     const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
     t.calls += r[3]; t.errors += r[4];
   });
-  // The tool behind the most errors. A name that never once succeeded is a
-  // tool name the model made up (a lowercase `bash`), not an integration to
-  // fix, so it is not a candidate; and the rank is by errors, not by rate, so
-  // a rarely-called tool can't outrank the one that accounts for the failures.
+  // The tool behind the most errors. A built-in name that never once
+  // succeeded is one the model made up (a lowercase `bash`), not a tool to
+  // fix, so it is not a candidate; an MCP tool that never succeeded is a
+  // broken integration, and is. The rank is by errors, not by rate, so a
+  // rarely-called tool can't outrank the one that accounts for the failures.
   const worstTool = Object.entries(byTool)
-    .filter(([, t]) => t.calls >= 10 && t.errors > 0 && t.calls > t.errors)
+    .filter(([name, t]) => t.calls >= 10 && t.errors > 0 && !inventedTool(name, t))
     .map(([name, t]) => ({ name, errors: t.errors, rate: t.errors / t.calls, calls: t.calls,
                            shareOfErrors: toolErrors ? t.errors / toolErrors : null }))
     .sort((a, b) => b.errors - a.errors || a.name.localeCompare(b.name))[0] || null;
@@ -294,8 +303,8 @@ function habitCards(r, b) {
     fix: "Our suggestion, not Anthropic's: a tool that fails often may be an integration or permission worth checking.",
     link: null,
     tip: 'Tool calls that returned an error, runs of consecutive failures, and the tool behind the most ' +
-         'errors (at least 10 calls and at least one success: a tool name that never succeeded is one ' +
-         'the model invented, not an integration).',
+         'errors (at least 10 calls; a built-in tool name that never succeeded is one the model ' +
+         'invented and is left out, while an MCP tool that never succeeded is a broken integration and counts).',
   });
   cards.push({
     label: 'Workflow',

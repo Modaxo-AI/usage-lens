@@ -27,7 +27,14 @@ what that found.
   their real time; they had moved to the session's first day (web lookups in
   a 5-day range read 5 searches instead of 8). The parse cache is rebuilt once.
 - Friction named an invented tool name ("bash fails 100%"); it now names the
-  tool with the most errors.
+  tool with the most errors. The same ranking now applies on the Tools &
+  errors tab ("Errors by tool", most errors first, with the rate) and in the
+  team view's friction tables and findings. A built-in tool name that never
+  once succeeded is one the model made up and is left out (and named); an MCP
+  tool that never succeeded is a broken integration and stays.
+- `sessions_started` in the export no longer counts transcripts that never got
+  a reply, so the team view's session counts match the dashboard (export
+  schema 12; the sessions sheet still lists them, with `requests` 0).
 - Context compactions are split into automatic and manual.
 
 **Clearer labels**

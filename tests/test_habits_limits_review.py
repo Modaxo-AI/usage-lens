@@ -72,6 +72,10 @@ class TestFrictionWorstTool(unittest.TestCase):
         self.assertIsNone(res["r"]["worstTool"])
         self.assertNotIn("bash", _card(res, "Friction")["sub"])
 
+    def test_an_mcp_tool_that_never_succeeded_is_a_broken_integration_and_counts(self):
+        res = _cards(self._setup([("mcp__down__get", 30, 30), ("Bash", 1000, 20)]))
+        self.assertEqual(res["r"]["worstTool"]["name"], "mcp__down__get")
+
     def test_the_callout_names_the_real_tool_and_its_share_of_errors(self):
         res = _cards(self._setup([("bash", 17, 17), ("Bash", 1000, 60), ("Read", 100, 2)]))
         sub = _card(res, "Friction")["sub"]

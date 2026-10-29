@@ -1626,20 +1626,36 @@ function renderTools() {
       plugins:{ legend:{display:false} } },
   });
 
-  const errorRateEntries = Object.entries(byTool).filter(([,v])=>v.calls>=10)
-    .map(([name,v]) => [name, v.errors/v.calls, v.calls])
-    .sort((a,b)=>b[1]-a[1]);
+  // Ranked by errors, not by rate: a rarely-called tool that failed a few
+  // times can't outrank the one behind most of the failures. The bar is the
+  // error count, coloured by rate. Built-in names the model made up (never once
+  // succeeded) are left out and named below; see inventedTool in habits.js.
+  const withErrors = Object.entries(byTool).filter(([,v]) => v.calls >= 10 && v.errors > 0);
+  const invented = withErrors.filter(([name,v]) => inventedTool(name, v));
+  const errorEntries = withErrors.filter(([name,v]) => !inventedTool(name, v))
+    .map(([name,v]) => [name, v.errors, v.calls, v.errors/v.calls])
+    .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0, 15);
+  const allErrors = Object.values(byTool).reduce((s,v) => s + v.errors, 0);
   upsertChart('toolErrorRate', 'toolErrorRateChart', {
     type: 'bar',
-    data: { labels: errorRateEntries.map(e=>e[0]), datasets: [{
-      data: errorRateEntries.map(e=>e[1]*100),
-      backgroundColor: errorRateEntries.map(e => e[1] >= 0.15 ? cssVar('--critical') : e[1] >= 0.05 ? cssVar('--warning') : cssVar('--good')),
+    data: { labels: errorEntries.map(e=>e[0]), datasets: [{
+      data: errorEntries.map(e=>e[1]),
+      backgroundColor: errorEntries.map(e => e[3] >= 0.15 ? cssVar('--critical') : e[3] >= 0.05 ? cssVar('--warning') : cssVar('--good')),
     }] },
     options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
-      scales: { x:{ min:0, max:100, ticks:{color:cssVar('--text-muted'), callback:v=>v+'%'}, grid:{color:cssVar('--gridline')} },
+      scales: { x:{ min:0, ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} },
                 y:{ ticks:{color:cssVar('--text-secondary'),font:{size:11}}, grid:{display:false} } },
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => `${ctx.raw.toFixed(1)}% (n=${errorRateEntries[ctx.dataIndex][2]})` } } } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => {
+        const [, errors, calls, rate] = errorEntries[ctx.dataIndex];
+        return `${fmtInt(errors)} errors of ${fmtInt(calls)} calls (${(rate*100).toFixed(1)}%)` +
+               (allErrors ? ` · ${(100*errors/allErrors).toFixed(1)}% of all errors` : '');
+      } } } } },
   });
+  const note = document.getElementById('toolErrorNote');
+  if (note) note.textContent = invented.length
+    ? `Left out: ${invented.map(([name,v]) => `${name} (${fmtInt(v.calls)} calls, none succeeded)`).join(', ')}, ` +
+      `a tool name the model made up rather than a tool to fix.`
+    : '';
 
   const byServer = {};
   Object.entries(byTool).forEach(([name,v]) => {

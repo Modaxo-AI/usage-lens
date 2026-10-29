@@ -547,11 +547,15 @@ function renderFriction() {
   (PAYLOAD.tools || []).filter(r => personOk(r[0]) && weekOk(r[1])).forEach(([person, , tool, integration, calls, errors]) => {
     const into = isClaudeCodeTool(integration, tool) ? cc : main;
     const key = integrationLabel(integration, tool);
-    const b = into[key] || (into[key] = { calls: 0, errors: 0, people: new Set() });
+    const b = into[key] || (into[key] = { calls: 0, errors: 0, people: new Set(), integration });
     b.calls += calls; b.errors += errors; b.people.add(person);
   });
-  const rowsOf = by => Object.entries(by).filter(([, b]) => b.calls >= 20 && b.errors > 0)
-    .sort((a, b) => b[1].errors / b[1].calls - a[1].errors / a[1].calls).slice(0, 12);
+  [main, cc].forEach(by => Object.values(by).forEach(b => { b.invented = inventedTool(b.integration, b); }));
+  // Most errors first, so a rarely-called tool can't outrank the one behind
+  // most failures; a built-in name the model made up (never succeeded) is
+  // left out, since there is no such tool to fix.
+  const rowsOf = by => Object.entries(by).filter(([, b]) => b.calls >= 20 && b.errors > 0 && !b.invented)
+    .sort((a, b) => b[1].errors - a[1].errors || a[0].localeCompare(b[0])).slice(0, 12);
   const html = rows => rows.map(([name, b]) => `<tr><td>${esc(name)}</td><td class="num">${fmtInt(b.calls)}</td>` +
     `<td class="num">${fmtInt(b.errors)}</td><td class="num">${fmtPct(b.errors / b.calls)}</td>` +
     `<td>${[...b.people].map(p => esc(nameOf(p))).join(', ')}</td></tr>`).join('');

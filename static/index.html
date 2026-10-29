@@ -204,7 +204,8 @@
   <!-- ============ TOOLS & ERRORS ============ -->
   <div class="tabpanel" id="tab-tools">
     <div class="card"><div class="card-head"><h2>Calls by tool (top 15)</h2></div><div class="chart-box tall"><canvas id="toolCallsChart"></canvas></div></div>
-    <div class="card"><div class="card-head"><h2>Error rate by tool (&ge;10 calls)</h2></div><div class="chart-box tall"><canvas id="toolErrorRateChart"></canvas></div></div>
+    <div class="card"><div class="card-head"><h2>Errors by tool (&ge;10 calls)</h2></div><div class="chart-box tall"><canvas id="toolErrorRateChart"></canvas></div>
+      <p class="foot-note">Most errors first; colour is the error rate (green under 5%, amber under 15%, red above). Hover for the rate and share of all errors. <span id="toolErrorNote"></span></p></div>
     <div class="card"><div class="card-head"><h2>MCP server rollup</h2></div><div class="chart-box short"><canvas id="mcpServerChart"></canvas></div></div>
     <div class="card"><div class="card-head"><h2>Errors over time</h2><span class="foot-note" style="margin:0;" id="grainNoteTools"></span></div><div class="chart-box short"><canvas id="errorsWeeklyChart"></canvas></div></div>
     <div class="card">
