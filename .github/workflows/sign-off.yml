@@ -1,0 +1,38 @@
+name: sign-off
+
+# Every commit in a pull request must carry a Signed-off-by line from its
+# author, certifying the Developer Certificate of Origin (see CONTRIBUTING.md).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-off:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit is signed off by its author
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=0
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            email=$(git log -1 --format=%ae "$sha")
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" \
+                | grep -qiF "<$email>"; then
+              echo "::error::$(git log -1 --format='%h %s' "$sha") has no Signed-off-by line for $email"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "Sign off each commit with 'git commit -s'. To fix commits already made:"
+            echo "  git rebase --signoff $BASE"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "Every commit is signed off."

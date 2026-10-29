@@ -36,5 +36,15 @@ licence. `git commit -s` adds it for you:
 Signed-off-by: Your Name <you@example.com>
 ```
 
+A check on every pull request fails if a commit is missing it, or if the
+sign-off's email isn't the commit author's. To sign off commits you've already
+made, run `git rebase --signoff origin/main` and force-push the branch.
+
+## Checks on a pull request
+
+Every pull request runs the test suite on Linux (Python 3.9 to 3.13), Windows
+and macOS, plus the sign-off check. All of them must pass before it can merge.
+A first-time contributor's checks start once a maintainer approves the run.
+
 By contributing, you agree that your contribution is licensed under the
 [Apache License 2.0](LICENSE).
