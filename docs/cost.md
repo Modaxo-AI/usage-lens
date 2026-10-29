@@ -28,7 +28,9 @@ dashboard and as a warning from `collect.py`. If you see one, add it to
 
 The 1M-context mode is billed at the same rates as the base model (the CLI's own
 figure for `claude-opus-5[1m]` reproduces exactly at standard Opus 5 rates), so
-the `[1m]` suffix is normalized away rather than priced separately.
+the `[1m]` suffix is normalized away rather than priced separately. Anthropic's
+pricing page says this for Claude 4.6 and later models; any long-context premium
+an earlier model had isn't modelled.
 
 Model names are normalized before lookup, so the same model is priced the same
 however it was reached:
@@ -97,6 +99,7 @@ exports of the same month agree and history never moves.
 | A rate differs | A dashboard notice and a `collect.py` warning listing each model, field, our rate and the published one, and whether the model is in your logs |
 | A published model the table doesn't price, that's in your logs | A notice naming it (it would otherwise show at $0); counts as a difference |
 | A model priced by prompt length (Haiku 5.5 today) | Both rows compared with the table's `long_prompt` block, threshold included; a difference names the tier, e.g. `output (prompts over 100,000 tokens)` |
+| A model the table prices by prompt length that the page now lists at one flat price | A difference, `long-prompt tier`: the base rates may match, but the table would still charge more for every long prompt |
 | The page can't be reached, or no longer looks as expected | A one-line note that it couldn't check — **never** "prices match". Retried after an hour |
 | The page parses only in part: a model's long-prompt rows can't be read as one "over N tokens" row plus one other, or a row naming Claude has a name it doesn't recognise (markup such as `**bold**`, a footnote marker, `&nbsp;` or an "Anthropic" prefix is cleaned off first) | A "couldn't fully check" note, naming the `unparsed tiers` or the unrecognised rows, even if the model isn't in your logs. Rate differences it could read are still listed. Retried after an hour |
 | A price cell holding more than one amount (`~~$4~~ $5`, `<s>$4</s> $5`, `$4 → $5`, `$5 (was $4)`) | A "couldn't fully check" note, naming the model and column (`more than one price in one cell`). Neither amount is taken, since which one is current is a guess. Retried after an hour |
@@ -220,7 +223,14 @@ is worked out per model and token category:
 
 The shortfall is priced at this table's rates on the day of the counter's last
 snapshot, not at the counter's own `costUSD`, so a rate the counter disagrees
-with is not imported. It is shown as "+ $X not in transcripts" under Total
+with is not imported. It adds up many calls, so a prompt-length tier (Haiku
+5.5's higher rates over 100,000 tokens) isn't applied to it: the sum says
+nothing about any one call's prompt. A call that really was over the threshold
+is then undercounted.
+
+The transcripts compared are every file in the counter's session (its main
+transcript and subagents), including requests a fork or resume copy also holds
+and is credited with, since the counter saw them in its own files. It is shown as "+ $X not in transcripts" under Total
 cost and in each session's detail, and is exported as `est_cost_unlogged_usd`.
 It is never added into Total cost or `est_cost_usd`, which every chart and
 breakdown adds up to.

@@ -94,8 +94,11 @@ export zips/CSVs (one or more per person, from collect.py --export / Export (.zi
 ## Project layout
 
 ```
-serve.py              entry point: local HTTP server (`/`, `/api/data`, `/api/export/*`, `/static/*`)
+serve.py              entry point: local HTTP server (`/`, `/api/data`, `/api/export/*`, `/static/*`;
+                      with --team, `/` serves the team page, plus `/api/team` and `/api/team/export.zip`)
 collect.py            entry point: writes data.json, and optionally a standalone dashboard.html
+.claude-plugin/       plugin.json and marketplace.json: the repo as a Claude Code plugin
+skills/               the plugin's skills: dashboard, team, export
 
 claude_usage/
   parser.py           parses one transcript file into requests/tools/skills/session facts

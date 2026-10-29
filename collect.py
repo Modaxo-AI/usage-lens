@@ -312,6 +312,7 @@ def main():
     args = parser.parse_args()
     if args.data_dir:
         paths.set_data_dir(args.data_dir)
+    context_mod.adopt_legacy_machine_id()
     if args.offline:
         os.environ[price_check.OFFLINE_ENV] = "1"
     for flag in ("since", "until"):

@@ -23,6 +23,10 @@ class TestDataDir(unittest.TestCase):
             self.assertEqual(paths.data_dir(), Path(tmp))
             self.assertEqual(paths.cache_dir(), Path(tmp) / "cache")
 
+    def test_a_relative_variable_is_made_absolute(self):
+        with mock.patch.dict(os.environ, {paths.DATA_DIR_ENV: "rel/lens"}):
+            self.assertEqual(paths.data_dir(), Path(os.path.abspath("rel/lens")))
+
     def test_set_data_dir_makes_the_path_absolute(self):
         with mock.patch.dict(os.environ, {}):
             paths.set_data_dir("relative/place")
@@ -63,7 +67,44 @@ class TestMachineIdLocation(unittest.TestCase):
         self.legacy.write_text("0123456789ab\n", encoding="utf-8")
         self.assertEqual(context.machine_id(), "0123456789ab")
         self.assertEqual((self.data / "machine-id").read_text(encoding="utf-8").strip(), "0123456789ab")
-        self.assertTrue(self.legacy.exists())  # left where it was
+        # Renamed, so it can't come back once the data folder's id is deleted.
+        self.assertFalse(self.legacy.exists())
+        self.assertTrue(self.legacy.with_name("machine-id.moved").exists())
+
+    def test_carried_over_once_only(self):
+        self.legacy.parent.mkdir(parents=True)
+        self.legacy.write_text("0123456789ab\n", encoding="utf-8")
+        context.adopt_legacy_machine_id()
+        (self.data / "machine-id").unlink()  # the copied-folder remedy
+        mid = context.machine_id()
+        self.assertNotEqual(mid, "0123456789ab")
+
+    def test_carried_over_at_startup_not_only_on_export(self):
+        self.legacy.parent.mkdir(parents=True)
+        self.legacy.write_text("0123456789ab\n", encoding="utf-8")
+        context.adopt_legacy_machine_id()
+        self.assertEqual((self.data / "machine-id").read_text(encoding="utf-8").strip(), "0123456789ab")
+
+    def test_no_old_copy_makes_nothing_at_startup(self):
+        context.adopt_legacy_machine_id()
+        self.assertFalse((self.data / "machine-id").exists())
+
+    def test_an_empty_file_is_waited_for_not_overwritten(self):
+        # Another process has opened the file and is about to write its id.
+        self.data.mkdir()
+        (self.data / "machine-id").write_text("", encoding="utf-8")
+        import threading
+        threading.Timer(0.2, lambda: (self.data / "machine-id").write_text(
+            "bbbbbbbbbbbb\n", encoding="utf-8")).start()
+        self.assertEqual(context.machine_id(), "bbbbbbbbbbbb")
+
+    def test_a_damaged_file_is_replaced(self):
+        self.data.mkdir()
+        (self.data / "machine-id").write_text("garbage\n", encoding="utf-8")
+        mid = context.machine_id()
+        self.assertRegex(mid, r"^[0-9a-f]{12}$")
+        self.assertEqual((self.data / "machine-id").read_text(encoding="utf-8").strip(), mid)
+        self.assertEqual([f.name for f in self.data.iterdir()], ["machine-id"])  # no temp left
 
     def test_the_data_folder_wins_over_an_older_copy(self):
         self.data.mkdir()

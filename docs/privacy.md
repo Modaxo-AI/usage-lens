@@ -1,12 +1,16 @@
 # Privacy
 
-The parser only ever reads: token/usage numbers, model names, timestamps,
-tool/skill *names* (never tool inputs or outputs), session and subagent titles,
-PR links, and environment metadata (CLI version, git branch, permission mode).
-Message text, tool inputs/outputs, and prompt history are never read into the
-aggregated data — enforced by a test (`tests/test_privacy.py`) that plants a
-sentinel string throughout a fixture transcript and asserts it never reaches
-the payload.
+The parser only ever keeps: token/usage numbers, model names, timestamps,
+tool/skill *names*, session titles, each session's working-directory path (the
+project), PR links, and environment metadata (CLI version, git branch,
+permission mode). For a subagent it also keeps its type and its short
+description, the label Claude wrote when it started the subagent, cut to 120
+characters; `--redact` removes it from a shared dashboard and no CSV carries
+it. Message text, tool inputs/outputs, and prompt history are never kept —
+enforced by a test (`tests/test_privacy.py`) that plants a distinct sentinel
+string in every kind of record a transcript holds and asserts none of them
+reaches the payload, the parse cache, `data.json`, the standalone dashboard or
+any CSV.
 
 There is one deliberate exception to "no message text": Claude Code's own
 **usage-limit notices**. When a limit stops a request, Claude Code writes a

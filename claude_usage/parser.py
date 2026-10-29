@@ -58,9 +58,11 @@ _NOT_PROMPT_PREFIXES = (
     "<bash-input>", "<bash-stdout>", "<bash-stderr>", "<ci-monitor-event>",
 )
 
-# Bumped whenever FileFacts gains or changes a field, so a cache written by an
-# older build is discarded instead of silently serving a payload with holes in it.
-FACTS_VERSION = 16
+# Bumped whenever FileFacts gains or changes a field, or what parsing reads
+# from a file changes, so a cache written by an older build is discarded instead
+# of silently serving a payload with holes in it. 17: a file starting with a
+# byte-order mark no longer loses its first record.
+FACTS_VERSION = 17
 
 
 # Re-exported here: the parser is where untrusted fields are read.
@@ -319,7 +321,9 @@ def parse_file(path: str, kind: str):
         # keeps one damaged byte from costing the entire file; a line that is
         # genuinely malformed still fails its own json.loads below and is
         # skipped.
-        fh = open(path, "r", encoding="utf-8", errors="replace")
+        # utf-8-sig: a byte-order mark (an editor on Windows adds one) would
+        # otherwise sit in front of the first line and fail its json.loads.
+        fh = open(path, "r", encoding="utf-8-sig", errors="replace")
     except OSError:
         return None
 

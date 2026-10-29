@@ -183,7 +183,7 @@ small, explicit exception to the no-content rule. **Interrupts** and
 
 | Signal | What it needs | Why it's worth it |
 |---|---|---|
-| **Interrupts** | Test whether a user record contains Claude Code's own fixed marker `[Request interrupted by user`, and keep only a count. Same class as the usage-limit exception already in `parser.py` | The only way to see mid-generation stops. In a sample log set, nearly one in five sessions *ends* on one |
+| **Interrupts** | Test whether a user record starts with Claude Code's own fixed marker `[Request interrupted by user`, and keep only a count. Same class as the usage-limit exception already in `parser.py` | The only way to see mid-generation stops. In a sample log set, nearly one in five sessions *ends* on one |
 | **Correction clusters** | Interrupts + user rejections + rewinds, clustered within one session | Direct proxy for "after two failed corrections, `/clear`", which is sourced. Show clusters, not the raw rate, because experts interrupt more overall |
 | **Verification present** | Classify each Bash command in memory into a category (test / build / lint / git commit) and keep only the category | Closest proxy for "verified success", the strongest outcome signal in Anthropic's research. Sessions that edit code but never run a check are the trust-then-verify gap |
 | **Blind retries** | In-memory hash of a failed tool call's input, compared with the next call | Catches retrying the same failing command. Usually rare, but a real thrash signal across a team |

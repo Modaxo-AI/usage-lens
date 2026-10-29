@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import subprocess
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -224,40 +225,81 @@ def machine_id():
     every export would make each re-export look like a new machine and double
     count, whereas a blank one merges exactly as before machine ids existed.
     """
-    path = Path(MACHINE_ID_FILE) if MACHINE_ID_FILE else paths.data_dir() / "machine-id"
-    for _ in range(2):
-        try:
-            existing = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            existing = None
+    path = _machine_id_path()
+    adopt_legacy_machine_id()
+    for attempt in range(20):
+        existing = _read_id(path)
         if existing and _MACHINE_ID_RE.match(existing):
             return existing
-        # A copy that kept its id beside the code keeps it here: a new id
-        # would make this machine's next export look like a second machine.
-        new = (_legacy_machine_id() if existing is None else None) or secrets.token_hex(6)
+        if existing == "" and attempt < 19:
+            # Another process opened the file and hasn't written its id yet.
+            time.sleep(0.05)
+            continue
+        new = secrets.token_hex(6)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # "x" when there is no file, so a server and a CLI export starting
-            # together can't each write a different id; a damaged file is
-            # replaced.
-            with open(path, "x" if existing is None else "w", encoding="utf-8") as fh:
-                fh.write(new + "\n")
+            if existing is None:
+                # "x", so a server and a CLI export starting together can't
+                # each write a different id: the second reads the first's.
+                with open(path, "x", encoding="utf-8") as fh:
+                    fh.write(new + "\n")
+            else:
+                _replace_text(path, new + "\n")  # damaged, or left empty
             return new
         except FileExistsError:
-            continue  # someone else just made it: read theirs
+            continue
         except OSError:
             return None
     return None
 
 
-def _legacy_machine_id():
-    path = (Path(LEGACY_MACHINE_ID_FILE) if LEGACY_MACHINE_ID_FILE
-            else paths.LEGACY_CACHE_DIR / "machine-id")
+def adopt_legacy_machine_id():
+    """Carry the id an older copy kept beside its code (.cache/machine-id) into
+    the data folder, once. A new id would make this machine's next export look
+    like a second machine. Called at startup, so it happens on the first run
+    rather than the first export. The old file is then renamed, so deleting the
+    data folder's id (to give a copied folder its own) can't bring it back."""
+    legacy = (Path(LEGACY_MACHINE_ID_FILE) if LEGACY_MACHINE_ID_FILE
+              else paths.LEGACY_CACHE_DIR / "machine-id")
+    old = _read_id(legacy)
+    if not (old and _MACHINE_ID_RE.match(old)):
+        return
+    path = _machine_id_path()
     try:
-        old = path.read_text(encoding="utf-8").strip()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="utf-8") as fh:
+            fh.write(old + "\n")
+    except FileExistsError:
+        pass  # the data folder already has an id, and it wins
+    except OSError:
+        return
+    try:
+        legacy.replace(legacy.with_name("machine-id.moved"))
+    except OSError:
+        pass
+
+
+def _machine_id_path():
+    return Path(MACHINE_ID_FILE) if MACHINE_ID_FILE else paths.data_dir() / "machine-id"
+
+
+def _read_id(path):
+    try:
+        return path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    return old if _MACHINE_ID_RE.match(old) else None
+
+
+def _replace_text(path, text):
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +314,8 @@ def normalize_remote(url):
 
     Two people who cloned the same repo into different folders, over https and
     ssh, get the same key. Any ``user:token@`` embedded in an https remote is
-    dropped -- that is the one way this column could otherwise leak a secret.
+    dropped, and so is any ``?query`` or ``#fragment`` -- the ways this column
+    could otherwise leak a secret.
     Local-path remotes return None: they identify a folder, not a repository.
     """
     if not url:
@@ -291,7 +334,9 @@ def normalize_remote(url):
         if not m:
             return None
         host, path = m.group(1), m.group(2)
-    path = path.strip("/")
+    # A query string or fragment is never part of a repository's name, and is
+    # where a token would ride (?access_token=...).
+    path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
     if path.endswith(".git"):
         path = path[:-4]
     if not host or not path:

@@ -49,12 +49,22 @@ SEAT_PRICE_FILE = "seat-prices.json"
 _MAX_EXPORT_BYTES = 64 * 1024 * 1024  # all of one zip's export CSVs, uncompressed
 _MAX_TOTAL_BYTES = 256 * 1024 * 1024  # every zip and CSV read in one run, uncompressed
 _MAX_MEMBERS = 100                    # entries in one zip
-_MAX_COLUMNS = 200                    # a real export's widest file has 92
+_MAX_COLUMNS = 200                    # a real export's widest file has about a hundred
 _MAX_ROWS = 200_000                   # in one CSV; a real one has a few thousand
+# Bytes don't bound what a parsed file costs: a row of empty cells is a byte
+# a cell on disk and eight bytes a cell in memory (and a zip squeezes it to
+# nothing), so 200 columns by 200,000 rows of commas fits the byte caps in 40 MB
+# and takes gigabytes once parsed. Parsed cells are therefore counted across the
+# whole run. A real export is tens of thousands of cells, a heavy one a million or
+# so, so this is room for a large team and about 200 MB at the most.
+_MAX_TOTAL_CELLS = 20_000_000
+# A row costs more than its cells (the row object and its tuple), so one counts for
+# at least this many: a file of one-column rows can't get round the cap.
+_MIN_ROW_CELLS = 16
 # csv.reader parses a whole record before returning it, so a record with
 # millions of commas would build millions of fields before the column check
 # could run. A record is therefore cut off by length first. A real one is a
-# few hundred characters (92 columns; a project path is the longest cell), so 1 MiB
+# few hundred characters (about a hundred columns; a project path is the longest cell), so 1 MiB
 # is thousands of times that and still caps the fields at about a million.
 _MAX_RECORD_CHARS = 1 << 20
 _MAX_SHARED_CELLS = 100_000           # distinct short cells _read_csv keeps one copy of
@@ -63,6 +73,14 @@ _MAX_SHARED_CELLS = 100_000           # distinct short cells _read_csv keeps one
 _READ_ERRORS = (OSError, EOFError, ValueError, RuntimeError, NotImplementedError,
                 zipfile.BadZipFile, zlib.error, csv.Error)
 _CHUNK = 64 * 1024  # a zip member is inflated this much at a time
+
+
+# Zone names that all mean UTC (the tool itself folds "UTC", "Z" and "Etc/UTC"
+# into "UTC"; --tz GMT is written as GMT).
+_UTC_ZONE_NAMES = frozenset((
+    "utc", "z", "etc/utc", "uct", "etc/uct", "zulu", "etc/zulu", "universal", "etc/universal",
+    "gmt", "etc/gmt", "gmt0", "gmt+0", "gmt-0", "etc/gmt0", "etc/gmt+0", "etc/gmt-0",
+    "greenwich", "etc/greenwich"))
 
 
 class _Unusable(Exception):
@@ -153,8 +171,12 @@ class Export:
     def bucket_zone(self):
         """The zone this export's days and weeks were bucketed in (schema 8's
         `bucket_zone`), or None for a legacy export: older files, and any with
-        the cell blank, were bucketed in the exporting machine's own zone."""
-        return (self._first("bucket_zone") or "").strip() or None
+        the cell blank, were bucketed in the exporting machine's own zone. The
+        names the tz database keeps for UTC (GMT, Etc/GMT, UCT, Zulu...) read as
+        "UTC": they cut days at the same midnight, and --tz GMT is no
+        disagreement with the default."""
+        zone = (self._first("bucket_zone") or "").strip() or None
+        return "UTC" if zone and zone.lower() in _UTC_ZONE_NAMES else zone
 
     @property
     def git_email(self):
@@ -322,10 +344,11 @@ def _records(stream):
             return
 
 
-def _read_csv(kind, stream):
+def _read_csv(kind, stream, budget=None):
     """(columns, rows) of one export CSV of `kind`, read from the text `stream`
     a line at a time; _Unusable if it lacks the columns the merge keys on,
-    holds a date or number it can't use, or is past the column, row or record-length limit."""
+    holds a date or number it can't use, or is past the column, row or
+    record-length limit, or (given a `budget`) takes the run past its cell limit."""
     reader = _records(stream)
     columns = next(reader, [])
     if len(columns) > _MAX_COLUMNS:
@@ -344,6 +367,7 @@ def _read_csv(kind, stream):
                (i, c, _is_count_or_amount, "negative or not a number")
                for c, i in index.items() if c in _NUMBERS]
     width = len(columns)
+    row_cells = max(width, _MIN_ROW_CELLS)
     rows = []
     seen = {}  # cells already read: one copy of "0" or a project name serves every row
     for line, cells in enumerate(reader, start=2):  # line 1 is the header
@@ -354,6 +378,8 @@ def _read_csv(kind, stream):
         if len(cells) > width:
             raise _Unusable(f"line {line} has {len(cells)} fields under a header of {width} "
                             "(more fields than columns)")
+        if budget is not None:
+            budget.take_cells(row_cells)
         if len(cells) < width:
             cells += [None] * (width - len(cells))
         for i, column, ok, what in checks:
@@ -396,11 +422,20 @@ class _Capped(io.RawIOBase):
 
 
 class _Budget:
-    """The uncompressed bytes of export CSVs a run may still read, across every
-    zip and loose file: what is parsed stays in memory until the merge is done."""
+    """What a run may still read, across every zip and loose file, since what is
+    parsed stays in memory until the merge is done: uncompressed bytes of export
+    CSVs, and parsed cells (rows times columns), which bytes don't bound."""
 
     def __init__(self):
         self.left = _MAX_TOTAL_BYTES
+        self.cells = _MAX_TOTAL_CELLS
+
+    def take_cells(self, count):
+        if count > self.cells:
+            raise _Unusable(f"it would take the run past {_MAX_TOTAL_CELLS:,} cells (rows times "
+                            "columns) in all the CSVs read at once, far more than exports have; "
+                            "mostly empty columns cost memory as much as full ones")
+        self.cells -= count
 
     def take(self, size):
         if size > self.left:
@@ -443,8 +478,8 @@ def read_exports(paths):
     An export with a file that can't be read, or fails the checks in
     _read_csv, is skipped whole, never half-merged. Files are parsed a line at
     a time, and what is read across all of them stays inside _MAX_TOTAL_BYTES
-    of CSV, _MAX_ROWS rows and _MAX_COLUMNS columns a file; one past a limit is
-    skipped like any other bad file."""
+    of CSV and _MAX_TOTAL_CELLS cells, and _MAX_ROWS rows and _MAX_COLUMNS columns a
+    file; one past a limit is skipped like any other bad file."""
     budget = _Budget()
     groups = {}
     problems = []
@@ -479,7 +514,7 @@ def read_exports(paths):
     for path, label in sorted(files):
         name = os.path.basename(path)
         loose = None
-        before = budget.left  # a file that is skipped frees what it took
+        before = (budget.left, budget.cells)  # a file that is skipped frees what it took
         try:
             if name.lower().endswith(".zip"):
                 # Every member is read and checked before any is added.
@@ -487,7 +522,7 @@ def read_exports(paths):
                 for member, stream in _zip_members(path, budget):
                     kind, key = key_of(os.path.abspath(path), member)
                     try:
-                        columns, rows = _read_csv(kind, stream)
+                        columns, rows = _read_csv(kind, stream, budget)
                     except _Unusable as exc:
                         raise _Unusable(f"{os.path.basename(member)}: {exc}") from None
                     folder = os.path.dirname(member)
@@ -508,16 +543,16 @@ def read_exports(paths):
                     raise _Unusable("too large to be an export")
                 budget.take(size)
                 with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
-                    columns, rows = _read_csv(kind, fh)
+                    columns, rows = _read_csv(kind, fh, budget)
                 if loose not in rejected:
                     add(loose, f"{folder} ({loose[2]}, {loose[3]})", kind, columns, rows)
             continue
         except _Unusable as exc:
             problems.append(f"{label}: {exc}, skipped")
-            budget.left = before
+            budget.left, budget.cells = before
         except _READ_ERRORS as exc:
             problems.append(f"{label}: could not be read ({type(exc).__name__}: {exc}), skipped")
-            budget.left = before
+            budget.left, budget.cells = before
         if loose:
             rejected[loose] = f"{os.path.dirname(path) or '.'} ({loose[2]}, {loose[3]})"
     for key, label in rejected.items():
@@ -593,7 +628,7 @@ def _seat_price(person, prices):
 
 def apply_seat_value(people, prices):
     """Value per seat: list-price usage against what the seat cost plus extra
-    usage, over each person's export window. A multiple above 1 means the seat
+    usage, over the days each person's exports cover. A multiple above 1 means the seat
     delivered more API-equivalent usage than it cost."""
     for p in people:
         price = _seat_price(p, prices)
@@ -602,7 +637,11 @@ def apply_seat_value(people, prices):
         p["value_multiple"] = None
         if price is None or not (p.get("window_from") and p.get("window_to")):
             continue
-        days = (_dt.date.fromisoformat(p["window_to"]) - _dt.date.fromisoformat(p["window_from"])).days + 1
+        # The days the exports cover, not min(from)..max(to): the days between two
+        # exports are neither counted nor paid for (the dashboard does the same).
+        days = p.get("window_days")
+        if days is None:
+            days = (_dt.date.fromisoformat(p["window_to"]) - _dt.date.fromisoformat(p["window_from"])).days + 1
         seat_cost = price / _PER_DAY[prices["per"]] * max(days, 0)
         paid = seat_cost + (p.get("extra_usage_usd") or 0.0)
         p["seat_cost_in_window"] = round(seat_cost, 2)
@@ -756,12 +795,19 @@ def _machine_groups(exports, keys):
     and an export with no machine id (schema 5 or older) that can't be tied to
     a machine by its sessions is merged with all of that person's exports, as
     every export was before machine ids existed. And one towards not losing
-    work: exports with the same id that each have sessions on days both cover,
-    but none of each other's, are two machines' logs (the tool's data folder
-    was copied), so they add up rather than one replacing the other. A session
-    the other export holds the continuation of (see `_continued`) doesn't count
-    as one it lacks: resuming a session between two exports from one machine
-    doesn't make them two machines.
+    work: exports with the same id where one lists sessions on days both cover
+    that the other, a later export, lacks (see `_apart`) are two machines' logs (the tool's
+    data folder was copied), so they add up rather than one replacing the other.
+    A session the other export holds the continuation of (see `_continued`)
+    doesn't count as one it lacks: resuming a session between two exports from
+    one machine doesn't make them two machines.
+
+    The reverse can't be settled from the files: exports with different ids and
+    no shared session are added as two machines, but one machine whose data
+    folder was deleted gets a new id and looks just like that, with its earlier
+    export's weekly rows still holding work the later one's cover. Where the
+    sessions don't show them to be different logs, the note says so (see
+    `_possible_repeats`).
     """
     parent = {id(e): id(e) for e in exports}
 
@@ -803,11 +849,14 @@ def _machine_groups(exports, keys):
                     home.extend(component)
             if len(homes) > 1:
                 notes.append({"level": "warn", "message":
-                    f"{person}: exports carrying the same machine id ({mid}) each have sessions on "
-                    "days they all cover but none of each other's, so they were counted as "
-                    f"{len(homes)} machines and added together. The tool's data folder was "
-                    "probably copied between machines; deleting its machine-id file (in ~/.usage-lens "
-                    "unless CLAUDE_USAGE_DATA_DIR moves it) on all but one gives each its own id."})
+                    f"{person}: exports carrying the same machine id ({mid}) disagree about the "
+                    "sessions on days they both cover (the older lists sessions that the newer, "
+                    "covering those days, lacks), so they were counted as "
+                    f"{len(homes)} machines and added together. The id is shared, so the tool's data "
+                    "folder was probably copied or synced between machines: delete the `machine-id` "
+                    "file in the data folder (~/.usage-lens, or wherever CLAUDE_USAGE_DATA_DIR or "
+                    "--data-dir points) on all but one of them, then re-export, to give each its own id."})
+        notes += _possible_repeats(person, group, find)
         ids_in = defaultdict(set)
         for e in group:
             if e.machine_id:
@@ -851,6 +900,58 @@ def _machine_groups(exports, keys):
     return labels, notes
 
 
+def _weekly_cost(e):
+    """{week: cost} from an export's summary, else its breakdown."""
+    kind = "summary" if "summary" in e.files else "breakdown"
+    out = defaultdict(float)
+    for row in e.files.get(kind, ()):
+        if row.get("week_start"):
+            out[row["week_start"]] += _num(row.get("est_cost_usd"))
+    return out
+
+
+def _possible_repeats(person, group, find):
+    """Notes for exports with different machine ids that share no session, whose
+    windows overlap, and that both hold cost in a week they both cover days of,
+    when the sessions don't show them to be different logs (see `_apart`).
+
+    That is what two machines look like, and also what one machine looks like
+    after its data folder was deleted (a new machine id) and a session that
+    started before the later export's window is still running: the earlier
+    export's weekly rows hold that session's cost on days the later one covers
+    too. The weekly rows can't be split by day and the later export can't list
+    the session, so the files can't say which it is. They are added (the other
+    choice loses a machine's work), and the weeks are named so the manager can
+    tell."""
+    weeks, ids = set(), set()
+    costs = {}
+    for i, a in enumerate(group):
+        for b in group[i + 1:]:
+            if not (a.machine_id and b.machine_id) or a.machine_id == b.machine_id \
+                    or find(id(a)) == find(id(b)):
+                continue
+            if not all(_window(a) + _window(b)) or not _overlaps(_window(a), _window(b)):
+                continue
+            costs.setdefault(id(a), _weekly_cost(a))
+            costs.setdefault(id(b), _weekly_cost(b))
+            shared = {week for week, cost in costs[id(a)].items()
+                      if cost > _COST_TOLERANCE and costs[id(b)].get(week, 0.0) > _COST_TOLERANCE
+                      and _days_of(week, _window(a)) & _days_of(week, _window(b))}
+            if shared and not _apart(a, b):
+                weeks |= shared
+                ids |= {a.machine_id, b.machine_id}
+    if not weeks:
+        return []
+    return [{"level": "warn", "message":
+        f"{person}: exports with different machine ids ({', '.join(sorted(ids))}) cover overlapping "
+        "days, share no session and are not shown to be different logs by their sessions, so they "
+        f"were added together as separate machines, and the totals for week(s) {', '.join(sorted(weeks))} "
+        "may double count if they are the same machine (deleting the tool's data folder gives a new "
+        "machine id, and a session that began before the later export's window can't be matched). "
+        "If so, drop the older export from the folder, or re-export from the day after the older "
+        "one's window ends so the two don't overlap."}]
+
+
 def _continued(row, e, c):
     """Whether export `c` holds the continuation of session `row` (from export
     `e`): another id with the original's start and project that either runs on
@@ -874,27 +975,63 @@ def _continued(row, e, c):
 
 
 def _apart(a, b):
-    """Whether two exports are different logs: each has a session on days both
-    windows cover that the other neither lists nor continues. (They share no
-    session id, or they'd be grouped already.) A session the other export holds
-    the continuation of isn't missing from it: one laptop exports, resumes a
-    session (the original becomes a copy the sessions sheet leaves out) and
-    exports again. Days before either's CLI history cut-off don't count --
-    missing sessions there were deleted, not never there."""
+    """Whether two exports are different logs: the older lists a session, started
+    on days both windows cover, that the newer neither lists nor continues.
+    (They share no session id, or they'd be grouped already.) An export made
+    later that covers those days holds everything an earlier one listed there if
+    it is the same logs, so a newer export with complete history that lacks the
+    older one's sessions is from another machine, whether or not the older one
+    lacks anything of the newer's -- and the work in it is not a re-export's to
+    drop. Not the other way round: the morning's export lacks a session that
+    began that afternoon, and the later export rightly has it. Two exports made
+    at the same moment can't tell which is older, so each must lack one of the
+    other's.
+
+    A session the other export holds the continuation of isn't missing from it:
+    one laptop exports, resumes a session (the original becomes a copy the
+    sessions sheet leaves out) and exports again. Days before either's CLI
+    history cut-off don't count -- missing sessions there were deleted, not
+    never there. Exports in different time zones put a session near midnight on
+    different days, so the first and last day both cover are left out for them."""
     (af, at), (bf, bt) = _window(a), _window(b)
     if not (af and at and bf and bt):
         return False
     lo = max([af, bf] + [e.context("cli_history_from") or "" for e in (a, b)
                          if e.context("cli_history_truncated") == "yes"])
     hi = min(at, bt)
+    if _zones_differ(a, b):
+        try:
+            lo = (_dt.date.fromisoformat(lo) + _dt.timedelta(days=1)).isoformat()
+            hi = (_dt.date.fromisoformat(hi) - _dt.timedelta(days=1)).isoformat()
+        except ValueError:
+            return False
     if lo > hi:
         return False
 
-    def holds_unique(e, other):
-        return any(lo <= (row.get("started_at") or "")[:10] <= hi
+    def lacks(e, other):
+        """Whether `e` lists a session `other` doesn't have. An export with no
+        sessions file lists none, which says nothing."""
+        return "sessions" in other.files and any(lo <= (row.get("started_at") or "")[:10] <= hi
                    and not _continued(row, e, other)
                    for row in e.files.get("sessions", ()) if row.get("session_id"))
-    return holds_unique(a, b) and holds_unique(b, a)
+    if _recency(a) == _recency(b):
+        return lacks(a, b) and lacks(b, a)
+    older, newer = sorted((a, b), key=_recency)
+    return lacks(older, newer)
+
+
+def _zones_differ(a, b):
+    """Whether two exports cut their days in different zones, as far as they say:
+    two named `bucket_zone`s that differ, or (without both names) `timezone`
+    offsets that differ. An export that names neither is no disagreement."""
+    if a.bucket_zone is not None and b.bucket_zone is not None:
+        return a.bucket_zone != b.bucket_zone and _zone_offsets_differ(a, b)
+    return _zone_offsets_differ(a, b)
+
+
+def _zone_offsets_differ(a, b):
+    offsets = [_offset_minutes(e.context("timezone")) for e in (a, b)]
+    return None not in offsets and offsets[0] != offsets[1]
 
 
 _EPISODE_SUMS = ("usage_before_hit_usd", "usage_after_hit_usd", "requests_after_hit")
@@ -953,7 +1090,9 @@ def _offset_minutes(value):
 
 def _recency(e):
     """Sort key for the newest export: its export instant, then its filename's
-    date."""
+    date. Every "newest" and "newer" in this module goes through it: timestamps
+    carry each machine's own UTC offset, so comparing them as text puts
+    10:00+09:00 (01:00 UTC) after 02:00+00:00."""
     moment = _instant(e.exported_at)
     if not isinstance(moment, _dt.datetime):
         moment = _dt.datetime.min
@@ -1315,7 +1454,7 @@ def _choose_for_week(week, rows_by_export, left_out=None):
 
     def rank(e):
         flagged = any(r.get("cli_history_complete") == "no" for r in rows_by_export[e])
-        return (not flagged, not lacks_sessions(e), len(days[e]), e.exported_at, e.stamp)
+        return (not flagged, not lacks_sessions(e), len(days[e]), _recency(e))
 
     chosen, covered = [], set()
     for e in sorted(rows_by_export, key=rank, reverse=True):
@@ -1571,7 +1710,7 @@ def merge(exports, problems=(), prices=None):
             continue
         # `person` first -- the normalised identity to pivot on -- then the
         # newest schema's columns, then anything only older files had.
-        holders_by_version = sorted(holders, key=lambda e: (e.schema_version, e.exported_at),
+        holders_by_version = sorted(holders, key=lambda e: (e.schema_version, _recency(e)),
                                     reverse=True)
         columns = ["person"]
         for e in holders_by_version:
@@ -1589,7 +1728,7 @@ def merge(exports, problems=(), prices=None):
                         continue
                     rank = -week_sources[week].index(e)
                 else:
-                    rank = e.exported_at
+                    rank = _recency(e)
                 if kind == "limits" and row.get("resets_at"):
                     # One machine has one episode per limit and reset time; the
                     # hit time is left out so the cross-machine step can match.
@@ -1696,7 +1835,7 @@ def merge(exports, problems=(), prices=None):
         "schema_version": e.schema_version, "tool_version": e.context("tool_version"),
         "machine_id": e.machine_id, "files": sorted(e.files),
         "bucket_zone": e.bucket_zone,
-    } for e in sorted(exports, key=lambda e: (keys[id(e)], e.exported_at))]
+    } for e in sorted(exports, key=lambda e: (keys[id(e)], _recency(e)))]
 
     return {
         "files": {k: (cols, rows) for k, (cols, rows, _) in files.items()},
@@ -1713,6 +1852,29 @@ _PERSON_CONTEXT = (
     "extra_usage_enabled", "allowance_est_usd", "allowance_week_used_pct", "allowance_status",
     "projected_limit_hit_at", "tool_version",
 )
+
+
+def _covered_days(windows):
+    """How many days the (since, until) `windows` cover between them: overlapping
+    or touching ones count once, and the days between two don't count. A window
+    that is missing a date, or ends before it starts, covers nothing (the
+    dashboard's `coverageIntervals` skips such a window too)."""
+    spans = []
+    for since, until in windows:
+        try:
+            first, last = _dt.date.fromisoformat(since), _dt.date.fromisoformat(until)
+        except (TypeError, ValueError):
+            continue
+        if first <= last:
+            spans.append((first, last))
+    total, reached = 0, None
+    for first, last in sorted(spans):
+        if reached is not None and last <= reached:
+            continue
+        total += (last - first).days + 1 if reached is None or first > reached \
+            else (last - reached).days
+        reached = last
+    return total
 
 
 def _window_days(e):
@@ -1732,11 +1894,11 @@ def _machine_active_days(group):
     known = [e for e in group if all(_window(e))
              and e.context("person_active_days") not in (None, "")]
     if not known:
-        newest = max(group, key=lambda e: e.exported_at)
+        newest = max(group, key=_recency)
         counts = (_num(newest.context(c), None) for c in ("person_active_days", "window_workdays"))
         return tuple(None if n is None else int(n) for n in counts)
     taken = []
-    for e in sorted(known, key=lambda e: (_window_days(e), e.exported_at, e.stamp), reverse=True):
+    for e in sorted(known, key=lambda e: (_window_days(e), _recency(e)), reverse=True):
         if not any(_overlaps(_window(e), _window(t)) for t in taken):
             taken.append(e)
     return (int(sum(_num(e.context("person_active_days")) for e in taken)),
@@ -1750,11 +1912,11 @@ def _activity(by_machine):
     windows' workdays), a floor rather than a double count. Last active is the
     latest anywhere; idle only if every machine's newest export is; history is
     cut short if it is on any machine's newest export."""
-    latest = [max(group, key=lambda e: e.exported_at) for group in by_machine.values()]
+    latest = [max(group, key=_recency) for group in by_machine.values()]
     active, workdays = max((_machine_active_days(group) for group in by_machine.values()),
                            key=lambda a: _num(a[0]))
     truncated = [e for e in latest if e.context("cli_history_truncated") == "yes"]
-    newest = max(latest, key=lambda e: e.exported_at)
+    newest = max(latest, key=_recency)
     idle = [e.context("seat_idle") for e in latest]
     return {
         "person_active_days": active,
@@ -1831,7 +1993,7 @@ def _people(keys, machines, by_person, files):
 
     people = []
     for person, group in sorted(by_person.items()):
-        newest = max(group, key=lambda e: e.exported_at)
+        newest = max(group, key=_recency)
         by_machine = defaultdict(list)
         for e in group:
             by_machine[machines[id(e)]].append(e)
@@ -1841,6 +2003,7 @@ def _people(keys, machines, by_person, files):
         row.update(_activity(by_machine))
         row["window_from"] = min((w for w in (_window(e)[0] for e in group) if w), default=None)
         row["window_to"] = max((w for w in (_window(e)[1] for e in group) if w), default=None)
+        row["window_days"] = _covered_days(_window(e) for e in group)
         row["exports"] = len(group)
         row["machines"] = len(by_machine)
         row["latest_export_at"] = newest.exported_at
@@ -2083,7 +2246,7 @@ def report_text(merged):
     valued = [p for p in merged["people"] if p.get("value_multiple") is not None]
     if valued:
         lines.append(f"Value per seat ({merged['prices']['source']}): list-price usage / "
-                     "(seat cost + extra usage) over each person's export window")
+                     "(seat cost + extra usage) over the days each person's exports cover")
         for p in sorted(valued, key=lambda p: -p["value_multiple"]):
             lines.append(f"  {p['person']}: {p['value_multiple']:.2f}x "
                          f"(${p['est_cost_usd']:,.0f} usage vs ${p['seat_cost_in_window']:,.0f} seat"

@@ -1,0 +1,9 @@
+{
+ "agentType": "general-purpose",
+ "description": "PRIVSENT_SUBAGENT_DESCRIPTION_HEAD xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxPRIVSENT_SUBAGENT_DESCRIPTION_TAIL",
+ "toolUseId": "tu-w4",
+ "parentAgentId": null,
+ "spawnDepth": 1,
+ "prompt": "PRIVSENT_SUBAGENT_META_PROMPT",
+ "initialPrompt": "PRIVSENT_SUBAGENT_META_INITIAL_PROMPT"
+}

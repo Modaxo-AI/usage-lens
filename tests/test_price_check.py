@@ -124,6 +124,24 @@ class TestCompare(unittest.TestCase):
         result = pc.compare(pc.parse(page))
         self.assertEqual([(d["model"], d["field"], d["ours"], d["published"]) for d in result["differences"]],
                          [("claude-haiku-5-5", "long-prompt threshold", 100_000, 200_000)])
+        self.assertIn("long-prompt threshold: table over 100,000 tokens, published over 200,000 tokens",
+                      "\n".join(pc.describe({"status": "differs", "url": pc.PRICING_URL,
+                                               "differences": result["differences"],
+                                               "missing": [], "tiered": []})))
+
+    def test_a_vanished_long_prompt_tier_is_reported(self):
+        # The page drops Haiku 5.5's premium: one flat row, the same base rates.
+        # The table would still charge 5x for long prompts, so that differs.
+        page = "\n".join(line.replace(" (for prompts up to 100,000 tokens)", "")
+                         for line in PAGE.splitlines() if "prompts over 100,000" not in line)
+        result = pc.compare(pc.parse(page), used_models=["claude-haiku-5-5"])
+        self.assertEqual(result["differences"], [{
+            "model": "claude-haiku-5-5", "field": "long-prompt tier", "ours": 100_000,
+            "published": None, "unit": "tokens", "used": True}])
+        self.assertIn("claude-haiku-5-5 long-prompt tier: table over 100,000 tokens, published none",
+                      "\n".join(pc.describe({"status": "differs", "url": pc.PRICING_URL,
+                                               "differences": result["differences"],
+                                               "missing": [], "tiered": []})))
 
     def test_a_cached_result_without_tier_rates_is_not_a_crash(self):
         published = pc.parse(PAGE)

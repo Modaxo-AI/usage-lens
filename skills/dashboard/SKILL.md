@@ -22,8 +22,8 @@ seconds to read their logs; later runs use a cache.
 - If the port is taken, run it again with `--port 8766`.
 - `--offline` skips the once-a-day check of Anthropic's public pricing page,
   the tool's only network request.
-- The tool reads usage numbers, model names and tool names from
-  `~/.claude/projects/`, never prompts, replies or code, and serves only on
-  `127.0.0.1`.
+- The tool reads usage numbers, model and tool names, session titles and
+  project folders from `~/.claude/projects/`. It never keeps prompts, replies
+  or code (it measures only a reply's length), and serves only on `127.0.0.1`.
 
 To stop it, stop the background task.

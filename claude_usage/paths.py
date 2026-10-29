@@ -19,13 +19,15 @@ DATA_DIR_ENV = "CLAUDE_USAGE_DATA_DIR"
 DEFAULT_DATA_DIR = "~/.usage-lens"
 
 # Where versions before the data folder kept their files: .cache/ beside the
-# code. Only the machine id is carried over from it (see context.machine_id);
-# the parse cache rebuilds itself in a few seconds.
+# code. Only the machine id is carried over from it, once (see
+# context.adopt_legacy_machine_id); the parse cache rebuilds itself.
 LEGACY_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
 
 
 def data_dir() -> Path:
-    return Path(os.environ.get(DATA_DIR_ENV) or DEFAULT_DATA_DIR).expanduser()
+    # Absolute, so a relative CLAUDE_USAGE_DATA_DIR doesn't follow the current
+    # directory from one run to the next.
+    return Path(os.path.abspath(os.path.expanduser(os.environ.get(DATA_DIR_ENV) or DEFAULT_DATA_DIR)))
 
 
 def cache_dir() -> Path:

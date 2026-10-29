@@ -252,7 +252,10 @@ def _unlogged(cli_by_model: dict, requests: list, state: dict, unknown_models: s
             "cache_read_input_tokens": row["cache_read_tokens"],
             "cache_creation": {"ephemeral_5m_input_tokens": row["cache_write_5m"],
                                "ephemeral_1h_input_tokens": row["cache_write_1h"]},
-        }, unknown_models, ts=state.get("ts"))
+        # Many calls' tokens added together: their sum can pass a prompt-length
+        # threshold that no single call did, so the base rates apply. A call
+        # that really was over it is undercounted; the logs can't say which.
+        }, unknown_models, ts=state.get("ts"), summed=True)
         row["cost"] = round(cost, 6)
         rows.append(row)
         total += cost
@@ -385,6 +388,14 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     sub_facts = [(a["session_id"], a["facts"]) for a in sub_agents]
     all_winners, owned_by_path, ordered = _dedupe_requests_across_files(main_facts, sub_facts)
 
+    # Every response each session's files hold (main transcript and subagents),
+    # whoever won it, for _unlogged: a counter saw the requests in its own
+    # files even when a fork copied them and won them.
+    winner_by_key = {_response_key(rec): rec for rec, _, _, _ in all_winners}
+    session_held = defaultdict(set)
+    for sid, facts in main_facts + sub_facts:
+        session_held[sid].update(_response_key(rec) for rec in facts.requests)
+
     # A main transcript whose every request was won by another file is a
     # resume/fork copy of that file, not a session of its own. Counting it would
     # double-count the session (and its active time) in every total.
@@ -434,7 +445,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     session_sub_cost = defaultdict(float)   # subagent cost per session
     session_requests = defaultdict(int)
     session_models = defaultdict(set)
-    session_won = defaultdict(list)          # every request a session won, for _unlogged
     session_imputed = defaultdict(int)       # imputed output tokens per session
     session_placeholders = defaultdict(int)  # responses whose output was imputed
     # Per (session, model) estimate, for reconciliation against cost-state modelUsage.
@@ -462,7 +472,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         skill_set.add(skill)
         session_requests[sid] += 1
         session_models[sid].add(model)
-        session_won[sid].append(rec)
         imputed = imputed_output(rec)
         if imputed:
             session_imputed[sid] += imputed
@@ -759,9 +768,9 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         # a counter: nothing measured it.
         unlogged_cost, unlogged_models = None, []
         if best_state and cli_by_model:
+            held = set().union(*(session_held.get(m, ()) for m in members))
             unlogged_cost, unlogged_models = _unlogged(
-                cli_by_model, [rec for m in members for rec in session_won.get(m, ())],
-                best_state, unknown_models)
+                cli_by_model, [winner_by_key[k] for k in held], best_state, unknown_models)
             unlogged_cost = round(unlogged_cost, 6)
 
         sessions_rows.append({
