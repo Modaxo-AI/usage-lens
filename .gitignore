@@ -1,0 +1,22 @@
+# Generated output (contains your real usage data — never commit)
+/data.json
+/dashboard.html
+/dashboard.app.js
+/.cache/
+claude-usage-*.csv
+claude-usage-export-*.zip
+claude-usage-team-merged.zip
+/team-merged/
+seat-prices.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,626 @@
+/* ===========================================================================
+   Usage Lens — dashboard styles, in the Modaxo brand.
+
+   Colour strategy: Modaxo brand colours drive the *chrome* (header, nav,
+   controls, accents). Categorical chart series keep a purpose-built ramp,
+   because the brand offers only ~5 usable hues and its own guide warns that
+   orange and amber fail contrast in exactly the ways chart marks need. Brand
+   colour does reach the charts, but only where a chart is single-series.
+   =========================================================================== */
+:root {
+  color-scheme: light;
+
+  /* -- Modaxo brand palette (fixed) ---------------------------------------- */
+  --modaxo-purple:  #573B80;
+  --modaxo-deep:    #3D2A5F;
+  --modaxo-orange:  #FB4F00;  /* accents/indicators only — fails as text on white */
+  --modaxo-teal:    #1DCEC9;  /* needs dark text on top */
+  --modaxo-amber:   #FFC000;  /* never pair with white text */
+  --modaxo-slate:   #44546A;
+  --modaxo-lav:     #EDE8F5;
+  --modaxo-lav-dim: #F8F7FB;
+  --modaxo-gray:    #E7E6E6;
+
+  /* -- Semantic surfaces -------------------------------------------------- */
+  --surface-1:      #ffffff;
+  --surface-2:      var(--modaxo-lav-dim);
+  --page-plane:     #f6f5f9;
+  --text-primary:   #16121f;
+  --text-secondary: var(--modaxo-slate);
+  --text-muted:     #7b7a88;
+  --gridline:       #e6e3ee;
+  --baseline:       #cac6d8;
+  --border:         rgba(87, 59, 128, 0.14);
+  --border-strong:  rgba(87, 59, 128, 0.28);
+
+  /* Brand roles. `--accent` is the interactive colour; `--on-accent` is the
+     only text colour guaranteed to pass on top of it. */
+  --accent:         var(--modaxo-purple);
+  --accent-hover:   var(--modaxo-deep);
+  --accent-soft:    var(--modaxo-lav);
+  --on-accent:      #ffffff;
+  --focus-ring:     rgba(87, 59, 128, 0.45);
+
+  /* Single-series chart colour (tool calls, MCP rollup, branches, modes). */
+  --series-solo:    var(--modaxo-purple);
+
+  /* Categorical ramp — kept distinct and legible in both modes. */
+  --series-1: #573B80; --series-2: #eb6834; --series-3: #0AADA9; --series-4: #c98500;
+  --series-5: #e87ba4; --series-6: #2a78d6; --series-7: #1baf7a; --series-8: #e34948;
+  --other: #b7b4c4;
+
+  --good: #0a8f4d; --warning: #B88000; --serious: #C03C00; --critical: #c42f2f;
+
+  /* -- Scales ------------------------------------------------------------- */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 9px; --r-lg: 13px; --r-pill: 999px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --shadow-sm: 0 1px 2px rgba(22, 18, 31, 0.05);
+  --shadow-md: 0 2px 8px rgba(22, 18, 31, 0.07), 0 1px 2px rgba(22, 18, 31, 0.04);
+  --shadow-pop: 0 10px 32px rgba(22, 18, 31, 0.16), 0 2px 8px rgba(22, 18, 31, 0.08);
+  --speed: 120ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface-1:      #1c1823;
+    --surface-2:      #241f2e;
+    --page-plane:     #121017;
+    --text-primary:   #f7f5fb;
+    --text-secondary: #bdb7cc;
+    --text-muted:     #908aa0;
+    --gridline:       #2e2839;
+    --baseline:       #3d3650;
+    --border:         rgba(255, 255, 255, 0.11);
+    --border-strong:  rgba(255, 255, 255, 0.22);
+
+    /* Primary purple is too dark to read against a dark plane, so the teal
+       takes the interactive role here and the purple becomes a soft fill. */
+    --accent:         #9b7fd4;
+    --accent-hover:   #b49cdf;
+    --accent-soft:    #2f2740;
+    --on-accent:      #16121f;
+    --focus-ring:     rgba(155, 127, 212, 0.55);
+    --series-solo:    var(--modaxo-teal);
+
+    --series-1: #9b7fd4; --series-2: #f0834f; --series-3: #4DDBD8; --series-4: #e0a93a;
+    --series-5: #ef96b6; --series-6: #5fa3e8; --series-7: #3ec793; --series-8: #ef6b6b;
+    --other: #4a4458;
+
+    --good: #35c47d; --warning: #FFC000; --serious: #FB7A40; --critical: #f06a6a;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45);
+    --shadow-pop: 0 12px 36px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* The `hidden` attribute has to outrank the component `display` rules below;
+   otherwise setting el.hidden = true has no visible effect. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--page-plane);
+  color: var(--text-primary);
+  /* Trebuchet MS is the Modaxo typeface; the rest are fallbacks. */
+  font-family: "Trebuchet MS", "Lucida Grande", Tahoma, Verdana, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 var(--sp-5) var(--sp-6); }
+
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--r-xs); }
+button { font: inherit; }
+a { color: var(--accent); text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+a:hover { color: var(--accent-hover); }
+
+/* ============================ App header ================================= */
+.app-header {
+  background: linear-gradient(100deg, var(--modaxo-deep) 0%, var(--modaxo-purple) 62%, #6b4a9c 100%);
+  color: #fff;
+  margin-bottom: var(--sp-5);
+}
+.app-header .wrap { padding-top: var(--sp-4); padding-bottom: var(--sp-4); }
+.header-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.brand-lockup { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand-mark {
+  font-weight: 700; font-size: 19px; letter-spacing: -0.01em; color: #fff;
+  display: inline-flex; align-items: flex-start; line-height: 1;
+}
+/* The orange dot above the "x" is a required part of the wordmark and must
+   never be omitted or recoloured. */
+.brand-mark { position: relative; }
+.brand-mark .x-wrap { position: relative; display: inline-block; }
+.brand-mark .dot {
+  position: absolute; top: -3px; left: 50%; transform: translateX(-50%);
+  width: 4.5px; height: 4.5px; border-radius: 50%;
+  background: var(--modaxo-orange);
+}
+.brand-divider { width: 1px; height: 17px; background: rgba(255,255,255,0.3); align-self: center; }
+.app-title { font-size: 16px; font-weight: 400; margin: 0; color: rgba(255,255,255,0.93); }
+
+.meta-row {
+  display: flex; align-items: center; gap: var(--sp-2) var(--sp-3); flex-wrap: wrap;
+  font-size: 12px; color: rgba(255,255,255,0.78); margin-top: 6px;
+}
+.meta-row .sep { opacity: 0.45; }
+.meta-row strong { color: #fff; font-weight: 600; }
+/* The shared .badge colours assume a light surface; on the purple header it
+   needs its own treatment to stay legible. */
+.meta-row .badge {
+  background: rgba(255,255,255,0.18); color: #fff;
+  border: 1px solid rgba(255,255,255,0.28);
+}
+
+.header-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+/* Which zone the Export button buckets in; the page itself shows local days. */
+.export-note { flex-basis: 100%; text-align: end; font-size: 11px; color: rgba(255,255,255,0.8); }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; padding: 7px 13px; border-radius: var(--r-pill); cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.1); color: #fff;
+  transition: background var(--speed), border-color var(--speed);
+}
+.btn-ghost:hover { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.65); }
+.btn-ghost:disabled { opacity: 0.55; cursor: progress; }
+.btn-ghost:focus-visible { outline-color: #fff; }
+
+/* ============================ Notices ==================================== */
+#notices:not(:empty) { margin-bottom: var(--sp-4); display: grid; gap: var(--sp-2); }
+.notice {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 11px 14px; border-radius: var(--r-md); font-size: 13px;
+  background: var(--surface-1); color: var(--text-secondary);
+  border: 1px solid var(--border); border-left: 3px solid var(--other);
+  box-shadow: var(--shadow-sm);
+}
+.notice::before { font-weight: 700; line-height: 1.3; }
+.notice.warn { border-left-color: var(--modaxo-amber); }
+.notice.warn::before { content: "!"; color: var(--warning); }
+.notice.critical { border-left-color: var(--critical); color: var(--text-primary); }
+.notice.critical::before { content: "!"; color: var(--critical); }
+
+/* ============================ Filter bar ================================= */
+.filters {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-4);
+  position: sticky; top: var(--sp-2); z-index: 30;
+}
+/* A 6-column grid rather than a wrapping flex row. The flex version packed
+   every control to the left and left the remaining width dead, and because the
+   groups had different heights their labels didn't line up. Here each control
+   owns a cell, fills it, and all labels sit on one baseline. */
+.filters-main {
+  display: grid;
+  /* 12 columns, with each control given the span its contents actually need:
+     a native date input can't go below ~130px without clipping the day, and the
+     ten bucket options need room to stay on one line. */
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+  align-items: start;
+}
+.filter-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* Spans are per-control and per-breakpoint: with five controls, one shared span
+   value always leaves an orphan on its own row at some width. Every row below
+   adds up to 12. */
+.fg-date    { grid-column: span 3; }
+.fg-quick   { grid-column: span 2; }
+.fg-bucket  { grid-column: span 3; }
+.fg-project { grid-column: span 2; }
+.fg-model   { grid-column: span 2; }
+
+.filter-group > .filter-label,
+.filter-field > label {
+  font-size: 10.5px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .06em;
+  /* Fixed height so a one-word and a two-word label still align the controls
+     underneath them. */
+  line-height: 1.3; min-height: 14px;
+}
+
+/* Date inputs share their cell evenly instead of being intrinsically sized. */
+.date-pair { display: flex; align-items: center; gap: 6px; }
+.date-pair input[type="date"] { flex: 1 1 0; min-width: 0; }
+.date-pair .dash { color: var(--text-muted); flex: none; }
+.filters input[type="date"] {
+  font: inherit; font-size: 13px; padding: 7px 9px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary);
+  transition: border-color var(--speed), box-shadow var(--speed);
+}
+.filters input[type="date"]:hover { border-color: var(--accent); }
+.filters input[type="date"]:focus-visible {
+  border-color: var(--accent); outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* Segmented controls stretch across their cell and split it evenly, so the row
+   reads as one deliberate band instead of ragged button clusters. */
+.segmented {
+  display: flex; width: 100%;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 2px;
+}
+.segmented button {
+  flex: 1 1 0; min-width: 0;
+  font-size: 12px; font-weight: 600; padding: 5px 4px; border: none; cursor: pointer;
+  background: transparent; color: var(--text-secondary); border-radius: var(--r-xs);
+  transition: background var(--speed), color var(--speed);
+  white-space: nowrap;
+}
+/* Ten options, laid out as a deliberate 5x2 block. Letting them flex-wrap left
+   the last two stretched across their own row. */
+.segmented.wrap { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; }
+.segmented button:hover:not(.active):not(:disabled) { background: var(--accent-soft); color: var(--text-primary); }
+.segmented button.active { background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-sm); }
+.segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.range-summary { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.range-summary strong { color: var(--text-secondary); font-weight: 600; }
+
+/* Active-filter footer row */
+.filters-active {
+  display: none; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px dashed var(--gridline);
+}
+.filters-active.shown { display: flex; }
+.filters-active .active-label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.btn-reset {
+  margin-left: auto; font-size: 12px; padding: 5px 12px; border-radius: var(--r-pill); cursor: pointer;
+  background: transparent; color: var(--accent); border: 1px solid var(--border-strong);
+  transition: background var(--speed), border-color var(--speed);
+}
+.btn-reset:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+/* Chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 260px;
+  font-size: 12px; padding: 4px 6px 4px 10px; border-radius: var(--r-pill);
+  background: var(--accent-soft); color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.chip .chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .chip-x {
+  flex: none; width: 16px; height: 16px; border-radius: 50%; border: none; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text-primary);
+  font-size: 13px; line-height: 1; display: grid; place-items: center; padding: 0;
+}
+.chip .chip-x:hover { background: var(--accent); color: var(--on-accent); }
+
+/* ===================== Searchable multi-select ============================ */
+.ms { position: relative; }
+.ms-trigger {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-width: 210px;
+  font-size: 13px; padding: 7px 10px; border-radius: var(--r-sm); cursor: pointer; text-align: left;
+  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border-strong);
+  transition: border-color var(--speed), box-shadow var(--speed);
+}
+.ms-trigger:hover { border-color: var(--accent); }
+.ms-trigger[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.ms-trigger .ms-summary { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-trigger.is-empty .ms-summary { color: var(--text-muted); }
+.ms-trigger .ms-count {
+  flex: none; font-size: 11px; font-weight: 700; min-width: 19px; height: 19px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--accent); color: var(--on-accent);
+  display: grid; place-items: center;
+}
+.ms-trigger .ms-caret { flex: none; color: var(--text-muted); font-size: 10px; transition: transform var(--speed); }
+.ms-trigger[aria-expanded="true"] .ms-caret { transform: rotate(180deg); }
+
+.ms-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  width: max(100%, 330px); max-width: min(460px, 80vw);
+  background: var(--surface-1); border: 1px solid var(--border-strong);
+  border-radius: var(--r-md); box-shadow: var(--shadow-pop); overflow: hidden;
+}
+.ms-panel[hidden] { display: none; }
+.ms-search-row { padding: var(--sp-2); border-bottom: 1px solid var(--gridline); }
+.ms-search {
+  width: 100%; font: inherit; font-size: 13px; padding: 7px 10px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong);
+  background: var(--surface-2); color: var(--text-primary);
+}
+.ms-search:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.ms-list { max-height: 268px; overflow-y: auto; padding: var(--sp-1); margin: 0; list-style: none; }
+.ms-opt {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 7px 9px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px;
+}
+.ms-opt:hover, .ms-opt.cursor { background: var(--surface-2); }
+.ms-opt.cursor { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.ms-opt input { accent-color: var(--accent); margin: 0; flex: none; width: 15px; height: 15px; }
+.ms-opt .ms-opt-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-opt[aria-selected="true"] .ms-opt-text { font-weight: 600; }
+.ms-empty { padding: 16px 12px; text-align: center; font-size: 12.5px; color: var(--text-muted); }
+.ms-foot {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2); border-top: 1px solid var(--gridline); background: var(--surface-2);
+}
+.ms-foot button {
+  font-size: 12px; padding: 4px 10px; border-radius: var(--r-sm); cursor: pointer;
+  background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border-strong);
+}
+.ms-foot button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ms-foot button:disabled { opacity: 0.45; cursor: not-allowed; }
+.ms-foot .ms-hint { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+
+/* ============================ Stat tiles ================================= */
+.stats {
+  display: grid;
+  gap: var(--sp-2);
+  /* Column count is set per tile row by renderTiles(), which picks a divisor
+     that leaves no orphan -- nine tiles go 3x3 rather than 4 + 4 + 1. The
+     narrow-width media queries below still override it. */
+  grid-template-columns: repeat(var(--tile-cols, 4), minmax(0, 1fr));
+  margin-bottom: var(--sp-4);
+}
+.stat-tile {
+  position: relative; overflow: hidden;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 9px 11px; box-shadow: var(--shadow-sm);
+}
+/* Thin brand rule along the top edge. */
+.stat-tile::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, var(--modaxo-purple), var(--modaxo-teal));
+  opacity: 0.85;
+}
+/* Sized to stay readable at roughly half the old tile width, so more fit per
+   row: the label wraps to two lines rather than being clipped, and the value
+   keeps tabular figures so columns of numbers still line up. */
+.stat-tile .label {
+  font-size: 9.5px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .05em; line-height: 1.25;
+}
+.stat-tile .value {
+  font-size: 17px; font-weight: 700; margin-top: 3px;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.015em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stat-tile .sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; line-height: 1.3; }
+
+/* ============================ Tab nav ==================================== */
+.tabstrip {
+  display: flex; gap: var(--sp-1); flex-wrap: wrap;
+  margin-bottom: var(--sp-4); border-bottom: 1px solid var(--border);
+}
+.tabstrip button {
+  font-size: 13.5px; font-weight: 600; padding: 10px 15px; border: none; background: transparent;
+  color: var(--text-muted); cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1px;
+  transition: color var(--speed), border-color var(--speed);
+}
+.tabstrip button:hover { color: var(--text-primary); border-bottom-color: var(--gridline); }
+.tabstrip button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tabpanel { display: none; }
+.tabpanel.active { display: block; animation: fade-in 140ms ease-out; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .tabpanel.active { animation: none; }
+  * { transition-duration: 1ms !important; }
+}
+
+/* ============================ Cards ====================================== */
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: var(--sp-4); margin-bottom: var(--sp-4);
+  box-shadow: var(--shadow-sm);
+}
+.card-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.card-head h2 { font-size: 14px; font-weight: 700; margin: 0; letter-spacing: -0.005em; }
+.toggle-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.toggle-row button {
+  font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: var(--r-sm); cursor: pointer;
+  background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+  transition: background var(--speed), color var(--speed), border-color var(--speed);
+}
+.toggle-row button:hover { border-color: var(--accent); color: var(--accent); }
+.toggle-row button.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+.chart-box { position: relative; height: 300px; }
+.chart-box.short { height: 230px; }
+.chart-box.tall { height: 420px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); margin-top: var(--sp-3); font-size: 12px; color: var(--text-secondary); }
+.legend span { display: inline-flex; align-items: center; }
+.legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; flex: none; }
+
+/* ============================ Tables ===================================== */
+table.data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.data-table th, table.data-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--gridline); }
+table.data-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface-1); color: var(--text-muted); font-weight: 700;
+  text-transform: uppercase; font-size: 10px; letter-spacing: .06em;
+  white-space: nowrap; user-select: none;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+table.data-table thead th[data-sort] { cursor: pointer; }
+table.data-table thead th[data-sort]:hover { color: var(--accent); }
+table.data-table th.sorted { color: var(--accent); }
+table.data-table th.sorted::after { content: " \25BE"; }
+/* Numeric headers follow their values. The markup has marked these `th`s
+   `.num` since the first commit, but only `td.num` was ever right-aligned, so a
+   header sat at the far left of a wide column with its numbers at the far
+   right -- which reads as a broken table rather than a styling slip. */
+table.data-table td.num,
+table.data-table th.num { text-align: right; }
+table.data-table td.num { font-variant-numeric: tabular-nums; }
+table.data-table tbody tr:hover > td { background: var(--surface-2); }
+table.data-table tr.expandable { cursor: pointer; }
+table.data-table tr.expand-row > td { background: var(--surface-2); padding: var(--sp-3); }
+table.data-table tr.expand-row:hover > td { background: var(--surface-2); }
+.table-scroll { max-height: 440px; overflow: auto; border-radius: var(--r-sm); }
+
+table.data-table.mini { font-size: 12px; margin-top: 8px; }
+table.data-table.mini th, table.data-table.mini td { padding: 4px 9px; }
+table.data-table.mini thead th { background: var(--surface-2); }
+
+.data-table td.ok   { color: var(--good); font-weight: 600; }
+.data-table td.warn { color: var(--warning); font-weight: 600; }
+.data-table td.bad  { color: var(--critical); font-weight: 600; }
+
+/* ============================ Badges ===================================== */
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: var(--r-pill);
+  font-size: 10px; font-weight: 700; letter-spacing: .02em; vertical-align: 1px;
+  background: color-mix(in srgb, var(--other) 32%, transparent); color: var(--text-secondary);
+}
+.badge.warn { background: color-mix(in srgb, var(--modaxo-amber) 26%, transparent); color: var(--text-primary); }
+.badge.ok { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--text-primary); }
+
+/* ============================ Habits ===================================== */
+/* The Overview strip: one card per habit, a status only where a sourced line
+   exists (see habits.js). */
+.habits-card .card-head { justify-content: flex-start; }
+.habits-card .habits-window { margin: 0; flex: 1 1 auto; }
+.habits-more { font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
+.habits-more:hover { text-decoration: underline; }
+/* Column counts that divide the six cards evenly, so no row strands one. */
+.habit-grid { display: grid; gap: var(--sp-3); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (min-width: 1500px) { .habit-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@media (max-width: 860px) { .habit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .habit-grid { grid-template-columns: minmax(0, 1fr); } }
+.habit {
+  display: flex; flex-direction: column; gap: 3px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r-md); padding: 10px 12px;
+}
+.habit.flagged { border-left-color: var(--modaxo-amber); }
+.habit-top { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
+.habit .label {
+  font-size: 9.5px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.habit .habit-status { white-space: nowrap; }
+.habit .value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.015em; }
+.habit .value .unit { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0; }
+.habit .sub { font-size: 11px; color: var(--text-muted); line-height: 1.35; overflow-wrap: anywhere; }
+.habit .fix { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; margin-top: auto; padding-top: 4px; }
+.habit .fix a { color: var(--accent); font-weight: 600; }
+.habit code, .habits-card code { background: var(--surface-1); padding: 0 4px; border-radius: var(--r-xs); font-size: 11px; }
+
+.recent-sessions { display: flex; flex-direction: column; gap: var(--sp-2); }
+.recent-session { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 10px; background: var(--surface-2); }
+.recent-session .rs-title { font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-session .rs-meta { font-size: 11px; color: var(--text-muted); margin: 2px 0 5px; }
+.recent-session .rs-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.data-table td.habit-tags { white-space: normal; min-width: 140px; }
+.data-table td.habit-tags .badge { margin: 1px 0; }
+
+/* ============================ Layout ==================================== */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-4); }
+/* The three time controls on one row, the two pickers on the next. */
+@media (max-width: 1180px) {
+  .fg-date, .fg-quick, .fg-bucket { grid-column: span 4; }
+  .fg-project, .fg-model { grid-column: span 6; }
+}
+/* Date + quick, then bucket full width, then the two pickers. */
+@media (max-width: 860px) {
+  .fg-date, .fg-quick { grid-column: span 6; }
+  .fg-bucket { grid-column: span 12; }
+  .fg-project, .fg-model { grid-column: span 6; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sk-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .fg-date, .fg-quick, .fg-bucket, .fg-project, .fg-model { grid-column: span 12; }
+  .stats { grid-template-columns: minmax(0, 1fr); }
+  .sk-tiles { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 980px) {
+  .two-col, .three-col { grid-template-columns: 1fr; }
+  /* Once the meta row wraps, a mid-line separator can end up dangling at the
+     end of a line; spacing alone reads better there. */
+  .meta-row { gap: var(--sp-1) var(--sp-3); }
+  .meta-row .sep { display: none; }
+  .wrap { padding-left: var(--sp-3); padding-right: var(--sp-3); }
+  .filters { position: static; }
+  .ms-trigger { min-width: 0; }
+}
+
+/* ============================ Heatmap ==================================== */
+div.heatmap { display: grid; gap: 3px; font-size: 11px; }
+div.heatmap .hm-cell { padding: 7px 4px; text-align: center; border-radius: var(--r-xs); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+div.heatmap .hm-label { color: var(--text-secondary); font-size: 10.5px; padding: 5px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ============================ Misc ====================================== */
+.foot-note { color: var(--text-muted); font-size: 11.5px; line-height: 1.5; margin: var(--sp-3) 0 0; }
+.foot-note code { background: var(--surface-2); padding: 1px 5px; border-radius: var(--r-xs); font-size: 11px; }
+
+/* Shown in place of a chart/table when the current filters match nothing. */
+.empty-state { padding: var(--sp-6) var(--sp-4); text-align: center; color: var(--text-muted); }
+.empty-state .es-title { font-size: 14px; font-weight: 700; color: var(--text-secondary); margin-bottom: 4px; }
+.empty-state .es-body { font-size: 12.5px; }
+.chart-box .empty-state { position: absolute; inset: 0; display: grid; align-content: center; }
+
+/* Initial load skeleton. */
+.skeleton-wrap { display: grid; gap: var(--sp-4); }
+.sk { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r-md); position: relative; overflow: hidden; }
+.sk::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 9%, transparent), transparent);
+  animation: shimmer 1.3s infinite;
+}
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.sk-bar { height: 62px; }
+.sk-row { height: 300px; }
+.sk-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-3); }
+.sk-tile { height: 74px; }
+@media (prefers-reduced-motion: reduce) { .sk::after { animation: none; } }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---- weekly allowance meter ---------------------------------------------- */
+.allowance { margin-bottom: var(--sp-3); }
+.allowance-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-2); font-size: 12.5px; margin-bottom: 6px; }
+.meter { height: 10px; border-radius: 999px; background: color-mix(in srgb, var(--text-muted) 18%, transparent); overflow: hidden; }
+.meter > div { height: 100%; border-radius: inherit; background: var(--modaxo-teal, #1DCEC9); }
+.meter.warn > div { background: var(--modaxo-amber); }
+.meter.bad > div { background: var(--critical); }
+.allowance-foot { color: var(--text-muted); font-size: 11.5px; margin-top: 6px; }
+.allowance-foot.warn { color: var(--warning); }
+.allowance-foot.bad { color: var(--critical); }
+
+/* ---- team dashboard -------------------------------------------------------- */
+.fg-people { grid-column: span 7; }
+@media (max-width: 1100px) { .fg-people { grid-column: span 12; } }
+table.heatmap { border-collapse: separate; border-spacing: 3px; font-size: 11px; }
+table.heatmap th { color: var(--text-muted); font-weight: 600; white-space: nowrap; padding: 2px 6px; text-align: center; }
+table.heatmap tbody th { text-align: left; color: var(--text-primary); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.hm-cell {
+  --hm: 0;
+  min-width: 46px; height: 26px; padding: 0 4px; border-radius: 4px; text-align: center;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+  background: color-mix(in srgb, var(--modaxo-purple) calc(var(--hm) * 100%), var(--surface-2));
+}
+.hm-cell[style*="--hm:0.9"], .hm-cell[style*="--hm:1.0"], .hm-cell[style*="--hm:0.8"],
+.hm-cell[style*="--hm:0.7"], .hm-cell[style*="--hm:0.6"] { color: #fff; }
+.hm-cell.partial { outline: 1px dashed var(--text-muted); outline-offset: -1px; }
+.hm-cell.cli-gap { background-image: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--modaxo-amber) 45%, transparent) 4px 6px); }
+.hm-key { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: middle; background: var(--surface-2); }
+.hm-key.partial { outline: 1px dashed var(--text-muted); outline-offset: -1px; }
+.hm-key.cli-gap { background-image: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--modaxo-amber) 55%, transparent) 3px 5px); }
+.findings { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; }
+.findings a { color: var(--text-primary); text-decoration: none; border-bottom: 1px dotted var(--text-muted); }
+.findings a:hover { color: var(--accent); }
+.perday-bar { position: relative; display: inline-block; width: 120px; height: 8px; margin-right: 8px;
+  vertical-align: middle; background: var(--surface-2); border-radius: 4px; }
+.perday-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; }
+.perday-bar .bench-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-muted); }
+.perday-bar .bench-mark.p90 { background: var(--warning); }
+details.cc-tools { margin-top: var(--sp-3); }
+details.cc-tools summary { cursor: pointer; color: var(--text-secondary); font-size: 12.5px; }

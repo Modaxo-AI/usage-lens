@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usage Lens — Team</title>
+<link rel="stylesheet" href="static/app.css">
+<script src="static/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="wrap">
+    <div class="header-row">
+      <div>
+        <div class="brand-lockup">
+          <span class="brand-mark">Moda<span class="x-wrap">x<span class="dot" aria-hidden="true"></span></span>o</span>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <h1 class="app-title">Usage Lens · Team</h1>
+        </div>
+        <div class="meta-row" id="subtitle">Loading&hellip;</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-ghost" id="exportBtn" type="button">
+          <span aria-hidden="true">&#8681;</span> Merged CSVs (.zip)
+        </button>
+        <button class="btn-ghost" id="refreshBtn" type="button">
+          <span aria-hidden="true">&#8635;</span> Refresh
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="notices"></div>
+
+  <div id="appBody" hidden>
+  <div class="filters" role="search" aria-label="Team filters">
+    <div class="filters-main">
+      <div class="filter-group fg-date">
+        <span class="filter-label">Weeks</span>
+        <div class="date-pair">
+          <input type="date" id="dateFrom" aria-label="From week">
+          <span class="dash" aria-hidden="true">&ndash;</span>
+          <input type="date" id="dateTo" aria-label="To week">
+        </div>
+        <span class="range-summary" id="rangeSummary" aria-live="polite"></span>
+      </div>
+      <div class="filter-group fg-quick">
+        <span class="filter-label">Quick range</span>
+        <div class="segmented" id="presetRow" role="group" aria-label="Quick ranges">
+          <button data-weeks="4" type="button">4w</button>
+          <button data-weeks="8" type="button">8w</button>
+          <button data-weeks="13" type="button">13w</button>
+          <button data-weeks="all" class="active" type="button">All</button>
+        </div>
+      </div>
+      <div class="filter-group fg-people">
+        <span class="filter-label">People</span>
+        <div id="peopleFilterMount"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabstrip" id="tabstrip" role="tablist">
+    <button data-tab="overview" class="active" type="button" role="tab" aria-selected="true" aria-controls="tab-overview">Overview</button>
+    <button data-tab="spend" type="button" role="tab" aria-selected="false" aria-controls="tab-spend">Spend</button>
+    <button data-tab="seats" type="button" role="tab" aria-selected="false" aria-controls="tab-seats">Seats &amp; limits</button>
+    <button data-tab="habits" type="button" role="tab" aria-selected="false" aria-controls="tab-habits">Habits</button>
+    <button data-tab="output" type="button" role="tab" aria-selected="false" aria-controls="tab-output">Output</button>
+    <button data-tab="data" type="button" role="tab" aria-selected="false" aria-controls="tab-data">People &amp; data</button>
+  </div>
+
+  <div class="tabpanel active" id="tab-overview" role="tabpanel">
+    <div class="card">
+      <div class="card-head"><h2>What stands out</h2></div>
+      <div id="findingsList"></div>
+      <p class="foot-note">Fixed rules over the selected people and weeks, each linking to its detail. Spend is list price.</p>
+    </div>
+  <div class="stats" id="teamTiles"></div>
+    <div class="card">
+      <div class="card-head"><h2>Team spend by week</h2></div>
+      <div class="chart-box"><canvas id="trendChart"></canvas></div>
+      <p class="foot-note">Bars: list-price cost by person. Line: people with any usage that week.</p>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Model use by week</h2>
+        <div class="toggle-row" id="modelMetricRow">
+          <button data-model-metric="cost" class="active" type="button">Cost ($)</button>
+          <button data-model-metric="tokens" type="button">Output tokens</button>
+        </div>
+      </div>
+      <div class="chart-box"><canvas id="modelTrendChart"></canvas></div>
+      <p class="foot-note">Everyone selected, added together, by the exact model each request ran on (a dated snapshot or
+        1M-context variant counts as its model). The 8 biggest over these weeks are named; the rest are Other. Cost is list
+        price; output tokens are what use up the allowance, and cheaper models can produce many of them.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>How current the data is</h2></div>
+      <div id="freshness"></div>
+    </div>
+
+  </div>
+
+  <div class="tabpanel" id="tab-spend" role="tabpanel">
+    <div class="card">
+      <div class="card-head"><h2>Spend by repository</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="repoTable">
+          <thead><tr><th>Repository</th><th class="num">Share</th><th class="num">Cost</th><th>People</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot-note">By the repo of the folder each session ran in (its git <code>origin</code>), else the folder. Top 8, then Other. List price.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Repository spend by week</h2></div>
+      <div class="chart-box"><canvas id="repoTrendChart"></canvas></div>
+    </div>
+  <div class="card">
+    <div class="card-head">
+      <h2 id="mixTitle">Mix by person</h2>
+      <div class="toggle-row" id="mixRow">
+        <button data-mix="model" class="active" type="button">By model</button>
+        <button data-mix="thread" type="button">Main vs subagent</button>
+        <button data-mix="tokens" type="button">Output tokens</button>
+      </div>
+    </div>
+    <div class="chart-box short"><canvas id="mixChart"></canvas></div>
+  </div>
+    <div class="card">
+      <div class="card-head"><h2>Spend per active day</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="perDayTable">
+          <thead><tr><th>Person</th><th class="num">Spend</th><th class="num">Active days</th>
+            <th class="num">Per active day</th><th>Against Anthropic’s benchmark</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot-note">Anthropic reports about $13 per developer per active day on average, and under $30 for 90% of users
+        (<a href="https://code.claude.com/docs/en/costs" target="_blank" rel="noopener">Manage costs</a>). List price, not your invoice.
+        Active days are the exact distinct days where the export carries them (schema 11); for older exports they are estimated from the export&rsquo;s own total and each week&rsquo;s project days (or, failing that, added and capped at the week&rsquo;s days in the export window, which can overstate the days and so understate spend per day).</p>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-seats" role="tabpanel">
+  <div class="card">
+    <div class="card-head">
+      <h2>Seat use by week</h2>
+      <div class="toggle-row" id="heatMetricRow">
+        <button data-metric="cost" class="active" type="button">Cost ($)</button>
+        <button data-metric="requests" type="button">Requests</button>
+        <button data-metric="days" type="button">Active days</button>
+      </div>
+    </div>
+    <div class="table-scroll"><table class="heatmap" id="heatmap"></table></div>
+    <p class="foot-note">Darker is more use. A blank cell is a week with no Claude Code activity.
+      <span class="hm-key partial"></span> part-week at the edge of that person's export window ·
+      <span class="hm-key cli-gap"></span> CLI history already deleted for that week, so only Desktop work shows.
+      Active days are the exact distinct days where the export carries them (schema 11); for older exports they are estimated from the export&rsquo;s own total and each week&rsquo;s project days; hover a cell marked &ldquo;≈&rdquo;.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Usage limits by person</h2></div>
+    <div class="table-scroll">
+      <table class="data-table" id="limitsTable">
+        <thead><tr><th>Person</th><th>Seat</th><th class="num">Limit hits</th><th class="num">Lock-outs</th>
+          <th class="num">Locked out</th><th class="num">Extra usage (est.)</th><th class="num">This week</th>
+          <th>Status</th><th>Projected hit</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="foot-note">Lock-outs are limit episodes where nothing got through until the reset. Extra usage is list-price
+      usage after the weekly limit and before its reset. &ldquo;This week&rdquo; is each person&rsquo;s share of their estimated
+      allowance at the time they exported, so it is only as current as their export. It, Status and Projected hit show only when the
+      selected weeks include the week of that export; otherwise they are dashes.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Extra usage per week &amp; run-rate</h2></div>
+    <div class="chart-box short"><canvas id="overageChart"></canvas></div>
+    <p class="foot-note" id="forecastNote"></p>
+  </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Value per seat</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="valueTable">
+          <thead><tr><th>Person</th><th>Tier</th><th class="num">Usage (list price)</th><th class="num">Seat cost</th>
+            <th class="num">Extra usage</th><th class="num">Value ×</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot-note">List-price usage in the selected weeks ÷ (seat cost + their extra usage in those weeks). Seat cost
+        counts only the days of the selected weeks that fall inside each person’s exports’ windows (not the gaps between them). Above 1×, the seat delivered
+        more API-equivalent usage than it cost. Seat prices come from <code>seat-prices.json</code> (docs/team.md).</p>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-habits" role="tabpanel">
+  <div class="card">
+    <div class="card-head"><h2>Habits by person</h2></div>
+    <div id="teamHabits"></div>
+    <p class="foot-note">Each person's habits next to the team median, to see where Claude Code could help someone more.
+      They are coaching signals, not a score or a performance measure: a long session can be the right call for big
+      work, and experienced users interrupt more, not less. Tell your team you look at these before collecting exports;
+      each person sees the same figures for themselves on their own Habits tab. Only the two shares with a sourced line
+      are highlighted: Anthropic's <code>/usage</code> flags long context (here, requests over 500k tokens) and cache misses at 10% of recent usage (this tool's cold-cache column counts expiry misses only).
+      Built from the habit columns in schema-7 exports; see docs/usage-health.md.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Friction by integration</h2></div>
+    <div class="table-scroll">
+      <table class="data-table" id="frictionTable">
+        <thead><tr><th>Integration or tool</th><th class="num">Calls</th><th class="num">Errors</th>
+          <th class="num">Error rate</th><th>People</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <details class="cc-tools"><summary>Claude Code's own tools</summary>
+      <div class="table-scroll">
+        <table class="data-table" id="ccToolsTable">
+          <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Errors</th>
+            <th class="num">Error rate</th><th>People</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot-note">Tools Claude Code uses to manage its own work (tasks, schedules, plan mode, worktrees). Their errors are Claude Code's, not an integration to fix.</p>
+    </details>
+    <p class="foot-note">Tool calls that returned an error across the selected people, for anything called at least 20 times. MCP tools are
+      grouped by their server. A high rate for everyone is an integration or a permission to fix, not a habit.</p>
+  </div>
+
+  </div>
+
+  <div class="tabpanel" id="tab-output" role="tabpanel">
+  <div class="card">
+    <div class="card-head"><h2>Pull requests by repository</h2></div>
+    <div class="table-scroll">
+      <table class="data-table" id="prTable">
+        <thead><tr><th>Repository</th><th class="num">PRs</th><th>People (PRs)</th>
+          <th class="num">Opened from another folder</th><th class="num">Session cost</th><th class="num">Per PR</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="foot-note">Grouped by the repo each PR was opened in, from its own URL — not by the folder the session ran in,
+      which is often a different repo. Session cost is the cost of the sessions that opened them, shared evenly when one
+      session opened several. PRs only appear where Claude Code logged them.</p>
+  </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Output by person</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="outputTable">
+          <thead><tr><th>Person</th><th class="num">PRs</th><th class="num">Cost per PR</th>
+            <th class="num">Lines added</th><th class="num">Lines removed</th><th class="num">Cost per 1k lines</th>
+            <th class="num">Spend with line data</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot-note">PRs only count where Claude Code logged them. Lines come from Claude Code’s own counter, which the
+        desktop app rarely writes, so cost per 1k lines divides only the spend of sessions that recorded lines; the last column
+        says how much of each person’s spend that is. Blank means not recorded, not zero.</p>
+    </div>
+
+  </div>
+
+  <div class="tabpanel" id="tab-data" role="tabpanel">
+  <div class="card">
+    <div class="card-head"><h2>People</h2></div>
+    <div class="table-scroll">
+      <table class="data-table" id="peopleTable">
+        <thead><tr><th>Person</th><th>Seat tier</th><th>Usage tier</th><th>Extra usage</th>
+          <th class="num">Seat use</th><th>Last active</th><th class="num">Sessions</th><th class="num">Cost</th>
+          <th class="num">Subagent share</th><th class="num">PRs</th><th class="num">Seat cost</th>
+          <th class="num">Value ×</th><th class="num">API retries</th><th>CLI history</th>
+          <th>Window</th><th class="num">Exports</th><th class="num">Schema</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="foot-note">The usage figures here follow the selected weeks above; the tier, CLI history, window, exports and
+      schema columns describe the export itself. Seat use is active days ÷ workdays in the selected weeks, counting only days
+      inside the person&rsquo;s exports&rsquo; windows; a leading &ldquo;≈&rdquo; means some weeks&rsquo; active days are estimated
+      (hover for the range; a re-export gives the exact count). Last active is the latest selected week with usage. Costs are list-price
+      equivalents (<code>cost_basis = api_list_price</code>), not what your organisation is invoiced.
+      <strong>Value ×</strong> is that list-price usage ÷ (seat cost for the selected weeks + their extra usage):
+      above 1, the seat delivered more API-equivalent usage than it cost. Seat prices come from <code>seat-prices.json</code>;
+      where CLI history was deleted, usage — and so the multiple — is understated.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Exports merged</h2></div>
+    <div class="table-scroll">
+      <table class="data-table" id="sourcesTable">
+        <thead><tr><th>Person</th><th>File</th><th>Exported</th><th>Window</th><th class="num">Schema</th><th>Machine</th><th>Files</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  </div>
+  </div>
+</div>
+
+<script src="static/filters.js"></script>
+<script src="static/team-findings.js"></script>
+<script src="static/team.js"></script>
+</body>
+</html>

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usage Lens</title>
+<link rel="stylesheet" href="static/app.css">
+<script src="static/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="wrap">
+    <div class="header-row">
+      <div>
+        <div class="brand-lockup">
+          <span class="brand-mark">Moda<span class="x-wrap">x<span class="dot" aria-hidden="true"></span></span>o</span>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <h1 class="app-title">Usage Lens</h1>
+        </div>
+        <div class="meta-row" id="subtitle">Loading&hellip;</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-ghost" id="exportBtn" type="button" hidden>
+          <span aria-hidden="true">&#8681;</span> Export (.zip)
+        </button>
+        <button class="btn-ghost" id="refreshBtn" type="button" hidden>
+          <span aria-hidden="true">&#8635;</span> Refresh
+        </button>
+        <div class="export-note" id="exportNote" hidden></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="notices"></div>
+
+  <div id="loadingSkeleton" class="skeleton-wrap" aria-busy="true" aria-live="polite">
+    <span class="sr-only">Loading usage data&hellip;</span>
+    <div class="sk sk-bar"></div>
+    <div class="sk-tiles">
+      <div class="sk sk-tile"></div><div class="sk sk-tile"></div><div class="sk sk-tile"></div>
+      <div class="sk sk-tile"></div><div class="sk sk-tile"></div><div class="sk sk-tile"></div>
+    </div>
+    <div class="sk sk-row"></div>
+  </div>
+
+  <div id="appBody" hidden>
+  <div class="filters" role="search" aria-label="Dashboard filters">
+    <div class="filters-main">
+      <div class="filter-group fg-date">
+        <span class="filter-label" id="lbl-range">Date range</span>
+        <div class="date-pair">
+          <input type="date" id="dateFrom" aria-label="From date">
+          <span class="dash" aria-hidden="true">&ndash;</span>
+          <input type="date" id="dateTo" aria-label="To date">
+        </div>
+        <span class="range-summary" id="rangeSummary" aria-live="polite"></span>
+      </div>
+
+      <div class="filter-group fg-quick">
+        <span class="filter-label">Quick range</span>
+        <div class="segmented" id="presetRow" role="group" aria-label="Quick date ranges">
+          <button data-preset="1" type="button">1d</button>
+          <button data-preset="5" class="active" type="button">5d</button>
+          <button data-preset="7" type="button">7d</button>
+          <button data-preset="30" type="button">30d</button>
+          <button data-preset="90" type="button">90d</button>
+          <button data-preset="all" type="button">All</button>
+        </div>
+      </div>
+
+      <div class="filter-group fg-bucket">
+        <span class="filter-label">Bucket size</span>
+        <div class="segmented wrap" id="grainRow" role="group" aria-label="Time bucket size"></div>
+        <span class="range-summary" id="grainSummary" aria-live="polite"></span>
+      </div>
+
+      <div class="filter-group fg-project">
+        <span class="filter-label" id="lbl-project">Project</span>
+        <div id="projectFilterMount"></div>
+      </div>
+
+      <div class="filter-group fg-model">
+        <span class="filter-label" id="lbl-model">Model</span>
+        <div id="modelFilterMount"></div>
+      </div>
+    </div>
+
+    <div class="filters-active" id="activeFilters">
+      <span class="active-label">Active</span>
+      <div id="activeChips" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+      <button class="btn-reset" id="resetFilters" type="button">Reset all</button>
+    </div>
+  </div>
+
+  <div class="stats" id="statTiles"></div>
+
+  <div class="tabstrip" id="tabstrip">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="habits">Habits</button>
+    <button data-tab="skills">Skills</button>
+    <button data-tab="tools">Tools &amp; errors</button>
+    <button data-tab="agents">Agents</button>
+    <button data-tab="sessions">Sessions</button>
+    <button data-tab="env">Output &amp; env</button>
+  </div>
+
+  <!-- ============ OVERVIEW ============ -->
+  <div class="tabpanel active" id="tab-overview">
+    <div class="card habits-card" id="habitsCard" hidden>
+      <div class="card-head">
+        <h2>Habits</h2>
+        <span class="foot-note habits-window" id="habitsWindow"></span>
+        <a class="habits-more" href="#habits">Open Habits &rarr;</a>
+      </div>
+      <div class="habit-grid" id="habitsStrip"></div>
+      <p class="foot-note">Each habit is priced or counted on its own; there is no overall score. A status appears only where Anthropic gives a line to measure against: its <code>/usage</code> flags long context and cache misses at 10% of recent usage (this tool's cache card counts expiry misses only), and it publishes ~$13 per active day as the average and $30 as the 90th percentile. Hover a card for how it is measured. These are for you; they are not a performance measure.</p>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Usage over time</h2><span class="foot-note" style="margin:0;" id="grainNoteOverview"></span>
+        <div class="toggle-row">
+          <button id="metricTokens" class="active">Tokens</button>
+          <button id="metricCost">Cost ($)</button>
+        </div>
+      </div>
+      <div class="chart-box"><canvas id="timeChart"></canvas></div>
+      <div class="legend" id="timeLegend"></div>
+    </div>
+    <div class="card" id="limitsCard">
+      <div class="card-head"><h2>Usage limits &amp; friction</h2></div>
+      <div id="allowanceWrap"></div>
+      <div class="stats" id="limitTiles"></div>
+      <div id="limitsTableWrap"></div>
+      <p class="foot-note">Limits come from the notices Claude Code writes when a limit stops a request; only the limit type and reset time are read from them.
+        <strong>Locked out</strong> means nothing got through until the reset; otherwise &ldquo;blocked&rdquo; is just how long the notices kept coming.
+        Dollar figures are list-price equivalents. The weekly limit also counts Claude chat usage, which isn&rsquo;t in these logs, so the allowance estimate is Claude Code&rsquo;s share only.</p>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>By project</h2></div><div class="chart-box short"><canvas id="projectChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><h2>By model</h2></div><div class="chart-box short"><canvas id="modelChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>By token type</h2></div>
+      <div class="chart-box short"><canvas id="tokenTypeChart"></canvas></div>
+      <div class="legend" id="tokenTypeLegend"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Estimate vs CLI-reported cost</h2></div>
+      <div id="reconcileWrap"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Data table</h2><div class="toggle-row"><button id="overviewTableToggle">Show table</button></div></div>
+      <div id="overviewTableWrap" style="display:none;">
+        <div class="table-scroll">
+          <table class="data-table" id="overviewTable">
+            <thead><tr><th>Date</th><th>Project</th><th>Model</th><th>Skill</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache&nbsp;read</th><th class="num">Cache&nbsp;write</th><th class="num">Cost</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="foot-note">Costs are estimates from public Anthropic API list pricing; the 1h cache-write rate is taken as 2&times; input, Anthropic's published multiplier. Fast-mode requests are priced at 2&times; and Batch-tier requests at 0.5&times;. Each API response is counted once, by its message id, across every transcript — Claude Code writes one line per part of a response, each repeating the full usage, and its own <code>/stats</code> counts them all (streamed snapshots keep only the largest output; a fork/resume copy yields to the original). Includes subagents. Web search and fetch results are priced as the input tokens they become; only the unlogged lookup request itself is not.</p>
+    </div>
+  </div>
+
+  <!-- ============ SKILLS ============ -->
+  <div class="tabpanel" id="tab-skills">
+    <div class="stats" id="skillStatTiles"></div>
+    <div class="two-col">
+      <div class="card">
+        <div class="card-head">
+          <h2 id="skillCostTitle">Tokens by skill</h2>
+          <div class="toggle-row" id="skillsMetricToggle">
+            <button id="skillsMetricTokens" class="active">Tokens</button>
+            <button id="skillsMetricCost">Cost ($)</button>
+          </div>
+        </div>
+        <div class="chart-box short"><canvas id="skillCostChart"></canvas></div>
+      </div>
+      <div class="card"><div class="card-head"><h2>Invocations by skill</h2></div><div class="chart-box short"><canvas id="skillInvocationsChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 id="skillWeeklyTitle">Weekly tokens by skill</h2></div>
+      <div class="chart-box"><canvas id="skillWeeklyChart"></canvas></div>
+      <div class="legend" id="skillWeeklyLegend"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Skill &times; project (cost)</h2></div>
+      <div id="skillHeatmap" class="heatmap"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Skills table</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="skillsTable">
+          <thead><tr><th>Skill</th><th class="num">Invocations</th><th class="num">Requests</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Sessions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TOOLS & ERRORS ============ -->
+  <div class="tabpanel" id="tab-tools">
+    <div class="card"><div class="card-head"><h2>Calls by tool (top 15)</h2></div><div class="chart-box tall"><canvas id="toolCallsChart"></canvas></div></div>
+    <div class="card"><div class="card-head"><h2>Error rate by tool (&ge;10 calls)</h2></div><div class="chart-box tall"><canvas id="toolErrorRateChart"></canvas></div></div>
+    <div class="card"><div class="card-head"><h2>MCP server rollup</h2></div><div class="chart-box short"><canvas id="mcpServerChart"></canvas></div></div>
+    <div class="card"><div class="card-head"><h2>Errors over time</h2><span class="foot-note" style="margin:0;" id="grainNoteTools"></span></div><div class="chart-box short"><canvas id="errorsWeeklyChart"></canvas></div></div>
+    <div class="card">
+      <div class="card-head"><h2>Tools table</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="toolsTable">
+          <thead><tr><th>Tool</th><th>Server</th><th class="num">Calls</th><th class="num">Errors</th><th class="num">Error&nbsp;rate</th><th class="num">Main</th><th class="num">Subagent</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ AGENTS ============ -->
+  <div class="tabpanel" id="tab-agents">
+    <div class="stats" id="agentStatTiles"></div>
+    <div class="toggle-row" id="agentsMetricToggle" style="margin-bottom:10px;">
+      <button id="agentsMetricTokens" class="active">Tokens</button>
+      <button id="agentsMetricCost">Cost ($)</button>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>Subagents by type (count)</h2></div><div class="chart-box short"><canvas id="agentTypeCountChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><h2 id="agentTypeMetricTitle">Subagents by type (tokens)</h2></div><div class="chart-box short"><canvas id="agentTypeCostChart"></canvas></div></div>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>Spawn depth</h2></div><div class="chart-box short"><canvas id="spawnDepthChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><h2 id="mainVsSubTitle">Main vs subagent tokens (weekly)</h2></div><div class="chart-box short"><canvas id="mainVsSubChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Subagents table</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="agentsTable">
+          <thead><tr><th>Date</th><th>Session</th><th>Type</th><th class="num">Depth</th><th>Description</th><th>Models</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SESSIONS ============ -->
+  <div class="tabpanel" id="tab-sessions">
+    <div class="card"><div class="card-head"><h2>Active time vs cost</h2></div><div class="chart-box"><canvas id="sessionScatterChart"></canvas></div></div>
+    <div class="card">
+      <div class="card-head"><h2>Sessions</h2><div class="toggle-row"><button id="forkToggle" style="display:none;"></button></div></div>
+      <div class="table-scroll">
+        <table class="data-table" id="sessionsTable">
+          <thead><tr>
+            <th data-sort="title">Title</th><th data-sort="project">Project</th><th data-sort="start">Start</th>
+            <th data-sort="active_ms" class="num">Active</th><th>Models</th><th data-sort="requests" class="num">Reqs</th>
+            <th data-sort="est_total" class="num">Est&nbsp;cost</th><th data-sort="cli_cost" class="num">CLI&nbsp;cost</th>
+            <th data-sort="n_subagents" class="num">Sub</th><th data-sort="tool_calls" class="num">Tools</th>
+            <th data-sort="lines_added" class="num">Lines&nbsp;+/-</th><th>PRs</th><th>Habits</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HABITS ============ -->
+  <div class="tabpanel" id="tab-habits">
+    <div class="habits-body">
+      <div class="stats" id="habitTiles"></div>
+      <div class="card">
+        <div class="card-head"><h2>Main-conversation spend by context size</h2><span class="foot-note" style="margin:0;" id="grainNoteHabits"></span></div>
+        <div class="chart-box"><canvas id="habitContextChart"></canvas></div>
+        <div class="legend" id="habitContextLegend"></div>
+        <p class="foot-note">Every request re-sends the whole conversation, so a long session costs more per message and, per Anthropic, gets less reliable as it fills. Requests over 200k tokens count as long context here: that line is ours, taken from the long-context tier in Anthropic's pricing. <code>/clear</code> between unrelated tasks keeps the 200k+ bands small.</p>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><h2>Cache misses by Claude Code's reason</h2></div>
+          <div class="chart-box short"><canvas id="habitMissChart"></canvas></div>
+          <p class="foot-note"><span id="habitMissNote"></span> Extra paid over reading the same tokens from a warm cache. &ldquo;Cache expired&rdquo; is picking a session up after a break longer than the cache lasts; &ldquo;model switched&rdquo; is <code>/model</code> mid-session.</p>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Permission mode when you prompted</h2></div>
+          <div class="chart-box short"><canvas id="habitModeChart"></canvas></div>
+          <p class="foot-note">Plan mode is worth it for multi-file or unfamiliar work, and overhead for a one-line fix.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Checking work</h2></div>
+        <div class="stats" id="habitCheckTiles"></div>
+        <p class="foot-note">Counted from the shell commands Claude ran, classified as test, lint, build, commit or PR. Only the category is kept, never the command. Anthropic's advice: give Claude a check it can run, and don't ship what you can't verify.</p>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><h2>Refused tool calls</h2></div>
+          <div class="chart-box short"><canvas id="habitDenialChart"></canvas></div>
+          <p class="foot-note">Recorded by Claude Code 2.1.246 and later.</p>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Recent sessions</h2></div>
+          <div id="habitRecent" class="recent-sessions"></div>
+        </div>
+      </div>
+      <p class="foot-note">How each measure is built, and the research behind it: <code>docs/usage-health.md</code>. Read from metadata Claude Code writes beside the conversation; prompts, replies and tool output are never read.</p>
+    </div>
+  </div>
+
+  <!-- ============ OUTPUT & ENV ============ -->
+  <div class="tabpanel" id="tab-env">
+    <div class="stats" id="envStatTiles"></div>
+    <div class="card">
+      <div class="card-head"><h2>Pull requests</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="prsTable">
+          <thead><tr><th>Date</th><th>Repo</th><th>#</th><th>Link</th><th>Session</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>Desktop vs CLI</h2></div><div class="chart-box short"><canvas id="entrypointChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><h2>CLI versions over time</h2></div><div class="chart-box short"><canvas id="versionsChart"></canvas></div></div>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>Top branches by cost</h2><span class="foot-note" style="margin:0;">repo &middot; branch</span></div><div class="chart-box"><canvas id="branchesChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><h2>Permission modes</h2></div><div class="chart-box"><canvas id="permissionModeChart"></canvas></div></div>
+    </div>
+  </div>
+
+  </div><!-- /#appBody -->
+</div>
+<script src="static/filters.js"></script>
+<script src="static/habits.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>

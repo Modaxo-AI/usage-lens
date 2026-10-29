@@ -1,0 +1,184 @@
+# Known limitations
+
+- **Subagent output is imputed from Claude Code 2.1.284 on.** From that build,
+  88–97% of subagent responses reach the transcript with only a placeholder
+  output count (2–20 tokens), not the final one (anthropics/claude-code#84223).
+  On one session that put Sonnet's output at about 2% of Claude Code's own
+  count, and the estimate 27% low. The output of
+  such a response is now estimated from how much it wrote: its text, its tool
+  calls and the length of its thinking signature. See
+  [Cost estimates](cost.md#subagent-output-and-calls-the-transcripts-miss).
+  How close the estimate is:
+
+  | | Imputed vs logged output |
+  |---|---|
+  | Opus 5, Opus 5.5, Sonnet 5 subagents, in aggregate | within ±4% |
+  | Main-thread responses, never fitted on | +1% to +14% |
+  | One response | typically 8–22% off |
+  | Haiku 4.5 | about 39% high (a small share of output, at Haiku rates) |
+
+  Totals are reliable; a single response's output is not. Imputed tokens are
+  counted in output and cost, and shown as their own figure everywhere.
+
+- **Transcripts don't record every model call. Where Claude Code kept its own
+  counter, the rest is shown separately; elsewhere the total is a floor.**
+  Claude Code's `cost-state` counter includes calls that never reach a
+  transcript. They look like calls it makes for itself (background summaries,
+  titles, compaction, an auto-mode classifier); that attribution is an
+  inference, not confirmed. Where a session has a counter, what the counter
+  holds beyond the session's transcripts is priced at list rates and shown as
+  "+ $X not in transcripts". It is never added into Total cost. On one
+  full log set that was about 2.6% of estimated usage, across the roughly
+  half of sessions that kept a counter.
+
+  A session **without** a counter has no such figure. Most desktop sessions
+  have none (see lines added below), so their cost reads a few percent low and
+  the export leaves `est_cost_unlogged_usd` blank rather than 0.
+
+  Two cases where the counter figure is approximate:
+  - The counter gives cache writes as one total. The missing writes are split
+    5m/1h in the transcript's own proportion.
+  - Fast-mode calls among the unlogged ones are priced at standard rates.
+
+  **The counter's own dollar figure is not this tool's.** Claude Code prices
+  Sonnet 5.5 cache reads at $0.20/MTok, but the published page and
+  `pricing.py` use $0.10. On the session checked against, that one rate
+  is the whole remaining gap: the tool reads 2.6% below the counter
+  (transcripts plus not in transcripts).
+
+  **Input from logged calls is counted correctly.** The `input_tokens` field
+  is *uncached* input only: with prompt caching almost everything sent is
+  billed as cache reads, so 95% of logged responses carry three or fewer input
+  tokens. Those are real values, not missing ones. The input the transcripts
+  miss belongs to the unlogged calls, and is in the "not in transcripts"
+  figure where a counter exists.
+
+  Any tool that reads only the transcripts shares the unlogged-call gap; ccusage
+  does. The **Estimate vs CLI-reported cost** table on the Overview tab shows the
+  per-model comparison for your own logs. A large positive gap there is the
+  counter resetting on resume (see [Cost estimates](cost.md)).
+
+- **Claude Code's own `/stats` reads about twice this tool's token total.** It
+  adds up every transcript line, and one response is written as one line per
+  part (thinking, text, each tool call), each repeating the response's full
+  usage. This tool counts each response once by its `message.id`, which is
+  Anthropic's documented rule. See anthropics/claude-code#91775.
+
+- **The allowance is estimated, not reported.** Claude Code's logs never record
+  a running "% of weekly allowance used" — the `rateLimits` field on API errors
+  is always empty — so the allowance is inferred from list-price usage at the
+  moment the weekly limit was last hit. It is Claude Code's share only: the same
+  weekly limit also counts Claude chat usage, which isn't in these logs. Treat
+  it as approximate until several weeks of hits agree, and expect it to read
+  blank for anyone who has never hit the limit.
+- **The Skills tab charts skill-attributed work only.** A request carries an
+  `attributionSkill` tag only when it ran inside a skill; everything else is
+  unattributed, and on a real log set that is ~91% of cost. Charting it
+  alongside real skills flattened them all to an unreadable sliver, so the
+  unattributed share is reported in the tiles at the top of the tab instead —
+  where "how much of our work runs inside a skill" is arguably the more useful
+  number anyway. Attribution is not perfect: a couple of skills were invoked
+  without any request carrying their tag, so a little real skill work lands in
+  the unattributed share.
+- **Median session cost and cost concentration are built from the filtered
+  rows**, not from whole-session totals, so they stay consistent with Total cost
+  when a date or project filter is on. Their denominator is sessions that
+  recorded priced usage, which is why the caption says "with spend" and can be
+  lower than the Sessions tile beside it. Concentration is trivially high when
+  few sessions are in range — the caption shows the sample size so a 99% reading
+  over six sessions is visibly not a finding.
+- **Cache savings are net.** The figure is what the cache-read tokens would
+  have cost as fresh input, *less* the premium paid to write the cache (a 5m
+  write is 1.25x input, a 1h write 2x). The premium is small — about 2% of the
+  gross on a real log set — but a savings number that ignores its own cost is
+  one nobody trusts twice.
+- **Limit reset times are read in US zone abbreviations and IANA names only.**
+  Only the US abbreviations (EST/EDT, CST/CDT, MST/MDT, PST/PDT) are mapped, to
+  their zones; MST is read as America/Denver, so Arizona's fixed MST is an hour
+  out in summer. Any other abbreviation falls back to the machine's local zone.
+  A reset time inside a daylight-saving gap or repeated hour resolves to its
+  first occurrence. A reset that can't be read leaves `resets_at` blank (see
+  [the limits file](export.md#the-limits-file-who-ran-out-of-allowance-and-what-it-cost-them)).
+- **A few log lines carry a cache-write split that disagrees with the total.**
+  On some lines the `ephemeral_5m`/`ephemeral_1h` tokens don't add up to
+  `cache_creation_input_tokens`. This tool trusts the split, since it is what
+  sets the write rate, and uses the total only when there is no split. On a real
+  log set the difference was a negligible fraction of total cost.
+- **Web lookups count tool calls, not `usage.server_tool_use`.** That usage
+  field tracks the Messages API's *server-side* web search tool, where Anthropic
+  runs the query. Claude Code's WebSearch/WebFetch are client-side tools — it
+  fetches itself and returns a tool_result — so the server-side counters stay at
+  zero in these logs. They are still parsed, in case a future build uses the
+  server-side tool, but nothing displays them. The export's
+  `web_search_requests` / `web_fetch_requests` columns count the same tool
+  calls as the dashboard tile.
+
+
+- Cost is an estimate (see above) — confirm against your actual bill before
+  relying on exact figures.
+- **Web lookups are almost entirely priced.** What a WebSearch or WebFetch
+  returns lands in the conversation as a tool result, so it is billed as input
+  tokens and is already in the cost. What is *not* in the logs is the side
+  request Claude Code makes to perform the lookup — the search itself, and the
+  small-model pass that condenses a fetched page — so its fee and tokens are
+  left out. That gap is negligible: on a real log set, 141 searches at the
+  published $10 per 1,000 came to about 0.03% of estimated usage.
+- **CLI history is usually only 30 days deep.** Claude Code deletes CLI
+  transcripts after `cleanupPeriodDays` (30 by default); Desktop ones are kept
+  much longer. The dashboard and export flag it when it has happened — see
+  [Short history](export.md#short-history-cli-transcripts-are-deleted-after-30-days).
+  The flag is inferred: it is raised when the oldest surviving CLI transcript
+  is 23–31 days old, the age deletion leaves behind. History starting more
+  recently is taken as someone new to the CLI and not flagged, so someone who
+  genuinely started 23–31 days ago is flagged when nothing was deleted.
+- "Desktop vs CLI" is exactly that: the logs only ever record `claude-desktop` or
+  `cli` as an entrypoint.
+- Branch/version-by-cost attribution picks each session's single most-frequent
+  branch/version rather than splitting per-request. Branch cost is keyed by
+  project *and* branch, so the same branch name in two repos stays separate;
+  `HEAD` is shown as `(detached)`, since that is what git records for a worktree
+  or a rebase rather than a real branch name.
+- **`lines added/removed` and CLI-reported cost depend on where you ran the
+  session.** Both ride on `cost-state` log entries, which Claude Code writes
+  reliably from the CLI and rarely from the desktop app. On a representative log
+  set:
+
+  | Entrypoint | Sessions reporting lines |
+  |---|---|
+  | `cli` | 7 of 8 (88%) |
+  | `claude-desktop` | 8 of 42 (19%) |
+
+  A session with no line count **did not necessarily change no code** — the
+  record simply was not written. If your team works mostly in the desktop app,
+  expect this metric to look mostly empty, and do not read that as low output.
+
+  Coverage is also much better by spend than by session count, because the
+  covered sessions tend to be the large ones: 30% of sessions but 66% of cost on
+  that same set. The export carries both — `sessions_with_line_data` for the
+  count and `cost_with_line_data_usd` for the spend — so a cost-per-line ratio
+  can use the denominator that actually reflects what was measured.
+
+  The count is a running total for the whole session, and its snapshots carry
+  no timestamp. The dashboard dates each rise in the total by the last
+  timestamped record before it, so a date range counts the lines written inside
+  it rather than every line of each session it touches. Snapshots are sparse,
+  though (seven across one six-week session), so lines can land a few days
+  after they were written. The export keeps each session's total in the week
+  the session started.
+- **A transcript line of an unexpected shape is skipped, not fatal.** A line
+  that is valid JSON but not a record (`null`, an array), or whose `message`,
+  `usage` or timestamp has the wrong type, costs that one record; the rest of
+  the file and the scan carry on. A partial last line on a live session is
+  skipped the same way.
+- **Windows is supported but less exercised.** Everything reads and writes
+  UTF-8 explicitly, because Python otherwise uses the platform default — cp1252
+  on Windows — and a log containing any non-ASCII character then fails to parse
+  at all. CI runs the suite on Windows and macOS as well as Linux to keep that
+  honest. Project paths recorded with backslashes are normalised to forward
+  slashes for display.
+- A cold scan (empty cache) takes a few seconds for ~500 files; a warm scan is
+  well under a second.
+
+---
+
+[← Back to the README](../README.md)

@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  # `push` on every branch plus `pull_request` ran the whole matrix twice for a
+  # single commit -- two runs, twelve jobs, competing for the same runner slots.
+  # Branch work is covered by the pull_request trigger; push only guards main.
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes the previous run for the same ref, so a queue does not
+# build up behind commits nobody is waiting on any more.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor the code actually supports; PEP 604 annotations are
+        # kept lazy (`from __future__ import annotations`) so they import there.
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.11", "3.12", "3.13"]
+        include:
+          # Windows defaults to cp1252 for text files, so a missing
+          # `encoding="utf-8"` passes everywhere else and then fails for every
+          # Windows user on the first non-ASCII byte in a log. Testing only on
+          # Linux is how that shipped, so this job is the one that matters.
+          #
+          # macOS is deliberately absent: it is what the tool is developed on,
+          # so it is exercised continuously anyway, and on a private repo a
+          # macOS minute bills at 10x a Linux one against the same quota that
+          # is making these jobs queue. Windows bills at 2x and is the platform
+          # nobody otherwise tests.
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m unittest discover -s tests -t . -v
