@@ -741,6 +741,7 @@ function populateFilters() {
   const maxDate = dates[dates.length-1] || PAYLOAD.summary.date_max || minDate;
   const prevMin = state._minDate, prevMax = state._maxDate;
   state._minDate = minDate; state._maxDate = maxDate;
+  let firstLoad = false;
   if (!state.from) {
     // Default view is the last 5 days: at the default 8-hour bucket that's a
     // readable 15 bars, and it's the window most usage questions are about.
@@ -748,6 +749,7 @@ function populateFilters() {
     if (state.from < minDate) state.from = minDate;
     state.to = maxDate;
     applyUrlState(minDate, maxDate);
+    firstLoad = true;
   } else {
     // A range that ran up to the latest data keeps doing so after a Refresh
     // brings in a new day; otherwise the newest work would fall just outside
@@ -773,6 +775,10 @@ function populateFilters() {
   ensureGrainFits();
   renderGrainControl();
   renderFilterSummary();
+  // What was asked for in the address may have been corrected (a bad date, an
+  // unknown project, a grain too fine for the range): write back what is
+  // actually shown, so the address never claims a view the page isn't in.
+  if (firstLoad) writeUrlState();
 }
 
 const DEFAULT_RANGE_DAYS = 5;
@@ -1118,8 +1124,12 @@ function renderGlobalStats() {
   // counter sits on whichever transcript owns it, and the toggle must not move
   // this figure.
   const withCounter = PAYLOAD.sessions.filter(s => s.est_cost_unlogged != null && sessionInFilters(s));
-  const counted = withCounter.filter(s => sessionStartDay(s) >= state.from
-                                          && (sessionEndDay(s) || sessionStartDay(s)) <= state.to);
+  // The span is the whole counter's (every transcript on it, counterSpan), as in
+  // the reconciliation table, not the owner transcript's own days.
+  const counted = withCounter.filter(s => {
+    const span = counterSpan(s);
+    return span.from && span.from >= state.from && span.to <= state.to;
+  });
   const unlogged = counted.reduce((s,x) => s + x.est_cost_unlogged, 0);
   const straddling = withCounter.length - counted.length;
 
@@ -1835,7 +1845,9 @@ function mcpServerOf(name) {
   if (!name.startsWith('mcp__')) return '(core tools)';
   const raw = name.split('__')[1] || '(mcp)';
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) return 'connector ' + raw.slice(0, 8);
-  return raw.replace(/^claude_ai_/i, '').replace(/^plugin_/i, '').replace(/^(.+)_\1$/i, '$1').toLowerCase() || '(mcp)';
+  // claude_ai_Atlassian, claude_ai_Atlassian_2 and plugin_atlassian_atlassian are one service
+  return raw.replace(/^claude_ai_/i, '').replace(/^plugin_/i, '').replace(/_\d+$/, '')
+            .replace(/^(.+)_\1$/i, '$1').toLowerCase() || '(mcp)';
 }
 
 function renderTools() {
@@ -1859,11 +1871,11 @@ function renderTools() {
 
   // Ranked by errors, not by rate: a rarely-called tool that failed a few
   // times can't outrank the one behind most of the failures. The bar is the
-  // error count, coloured by rate. A name that isn't a Claude Code built-in and
+  // error count, coloured by rate. A name that isn't in Claude Code's documented tool list and
   // never once succeeded (made up by the model, or not available) is left out and
   // named below, and so is an MCP tool name that never worked while its server's
   // other tools did; see inventedTool and strayMcpTools in habits.js.
-  const stray = strayMcpTools(byTool);
+  const stray = strayMcpTools();
   const MIN_CALLS = 10, TOP = 15;
   const withErrors = Object.entries(byTool).filter(([,v]) => v.errors > 0);
   const ranked = withErrors.filter(([,v]) => v.calls >= MIN_CALLS);
@@ -1908,7 +1920,7 @@ function renderTools() {
         `(${fmtInt(smallErrors)} error${smallErrors === 1 ? '' : 's'}) aren't ranked.` : '',
     invented.length
       ? `Left out: ${invented.map(([name,v]) => `${name} (${fmtInt(v.calls)} ${v.calls === 1 ? "call" : "calls"}, none succeeded)`).join(', ')}, ` +
-        `a tool name that isn't a Claude Code built-in and never succeeded (made up by the model, or not available).` : '',
+        `a tool name that isn't in Claude Code's documented tool list and never succeeded (made up by the model, or not available).` : '',
     strays.length
       ? `Also left out: ${strays.map(([name,v]) => `${name} (${fmtInt(v.calls)} ${v.calls === 1 ? "call" : "calls"}, none succeeded)`).join(', ')}, ` +
         `an MCP tool name that never worked while other tools on its server did.` : '',
@@ -1936,8 +1948,8 @@ function renderTools() {
   const mcpNote = document.getElementById('mcpNote');
   if (mcpNote) mcpNote.textContent = `MCP servers only. Claude Code's own tools (${fmtInt(coreCalls)} calls, ` +
     `${fmtInt(coreErrors)} errors) are left out so they don't swamp the integrations. Server names are tidied so ` +
-    `one service isn't split by how it was added (a claude_ai_ or plugin_ prefix is dropped); a connector named ` +
-    `only by an id shows as "connector" and its first characters.`;
+    `one service isn't split by how it was added (a claude_ai_ or plugin_ prefix and a trailing _2 are dropped); a connector named ` +
+    `only by an id shows as "connector" and its first characters, and can't be matched to the same service under its name.`;
 
   const grain = state.grain;
   document.getElementById('grainNoteTools').textContent = 'per ' + grainInfo(grain).noun;

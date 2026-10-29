@@ -161,7 +161,7 @@ hard-code it.
 | **What** | Tool error rate by tool and MCP server; runs of ≥3 consecutive errors; refused tool calls by reason |
 | **Fields** | Tool errors (already read). New: `toolDenialKind` (user-rejected, automode-blocked, automode-unavailable, permission-rule, interrupted), `permissionDecision.source`, per-thread order of tool results |
 | **Example** | Overall **2%** error rate, but one MCP server fails **30%** of the time; a handful of error streaks of 3 or more |
-| **Fix shown** | Our suggestion, not Anthropic's: a tool that fails often may be a broken integration, a missing permission rule, or a sandbox gap, often a team-level fix, which makes this the most useful single measure for managers. The worst tool is the one behind the most errors. A tool name that isn't a Claude Code built-in and never once succeeded (made up by the model, such as a lowercase `bash`, or not available) is ignored, as is an MCP tool name that never worked while other tools on its server did (a stray name, not a failing server); a built-in that fails every time (`WebSearch` when it isn't permitted) and an MCP server that never works both count. Refused calls (`toolDenialKind`: you or a rule said no) are not errors, here or in "errors in a row" |
+| **Fix shown** | Our suggestion, not Anthropic's: a tool that fails often may be a broken integration, a missing permission rule, or a sandbox gap, often a team-level fix, which makes this the most useful single measure for managers. The worst tool is the one behind the most errors. A tool name that isn't in Claude Code's documented tool list (the list also holds a few real but undocumented tools seen in logs, such as `SearchSkills`) and never once succeeded (made up by the model, such as a lowercase `bash`, or not available) is ignored, as is an MCP tool name that never worked while other tools on its server did (a stray name, not a failing server; "never worked" is judged over all your recorded calls, not only the dates on screen, so a real tool is not dropped because its one call in a short range failed); a documented tool that fails every time (`WebSearch` when it isn't permitted) and an MCP server that never works both count. Refused calls (`toolDenialKind`: you or a rule said no) are not errors, here or in "errors in a row" |
 
 ### 3.5 Workflow adoption
 
@@ -403,8 +403,8 @@ strip and the "Usage limits & friction" panel; covered by
 - **Cold-cache tag** says its $0.50 line is this tool's own and that not every
   break is avoidable.
 - **Away recaps** (`away_summary`) show beside the prompt count.
-- **Invented tool names** are decided by name against Claude Code's list of built-in
-  tools, as described in §3.4.
+- **Invented tool names** are decided by name against Claude Code's documented
+  tool list (plus a few real, undocumented tools), as described in §3.4.
 
 **Phase 4, only if approved:** the remaining §4 signals (correction clusters,
 blind retries, edit churn), one at a time, each documented in docs/privacy.md and

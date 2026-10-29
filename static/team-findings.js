@@ -66,8 +66,10 @@ const BUILTIN_TOOLS = new Set(['Agent', 'Artifact', 'AskUserQuestion', 'Bash', '
   'SendFeedback', 'SendMessage', 'SendUserFile', 'ShareOnboardingGuide', 'Skill', 'SubagentHandback',
   'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate', 'TodoWrite', 'ToolSearch',
   'WaitForMcpServers', 'WebFetch', 'WebSearch', 'Workflow', 'Write',
-  'Task', 'MultiEdit', 'LS', 'NotebookRead', 'TodoRead', 'KillShell', 'BashOutput', 'exit_plan_mode']);
-// "A tool name that isn't a Claude Code built-in and never succeeded (made up by
+  'Task', 'MultiEdit', 'LS', 'NotebookRead', 'TodoRead', 'KillShell', 'BashOutput', 'exit_plan_mode',
+  // Real tools seen in logs that the documentation doesn't list.
+  'SearchSkills', 'DesignSync', 'PublishPlugin', 'ListSkills', 'ListPlugins']);
+// "A tool name that isn't in Claude Code's documented tool list and never succeeded (made up by
 // the model, or not available)": decided by name, so a real tool that fails
 // every time stays. MCP tools are never this (see analyzeTools).
 function inventedTool(integration, tool, t) {
@@ -286,9 +288,9 @@ function rangeDays(basis, weeks) {
 // week's rows for a person with no basis.
 function weekDaysFigure(basis, week, rows) {
   const e = basis && basis.weeks[week];
-  if (e) return { days: Math.round(e.est), approx: e.approx };
-  const w = weekActiveDays(rows);
-  return { days: w.days, approx: w.approx };
+  if (e) return { days: Math.round(e.est), approx: e.approx, lo: e.lo, hi: e.hi };
+  const w = weekFigure(rows);
+  return { days: w.days, approx: w.approx, lo: w.lo, hi: w.hi };
 }
 // Active days per person over the given rows (the selected weeks' rows), as
 // rangeDays gives them. bases: activeBasis for the people, so a total from the
@@ -496,9 +498,10 @@ function personInRange(p, rows, limits, prs, range, prices, opts) {
   if (out.idle && gapWeeks.length && gapWeeks.length === Object.keys(weeks).length) {
     out.idle = false; out.historyDeleted = true;
   }
-  // An export from a machine with no logs, from before schema 13, covers one day with
-  // nothing in it: that says nothing about whether the seat is used.
-  out.noLogs = !!(p && p.no_usage_window && (p.window_days || 0) <= 1);
+  // An export from a machine with no logs holds nothing and covers only the short
+  // default window (a day before schema 13, 30 days from it): that says nothing about
+  // whether the seat is used, so the same rule applies to both.
+  out.noLogs = !!(p && p.no_usage_window);
   if (out.noLogs) out.idle = false;
   out.workdays = workdays;
   out.seatUse = workdays && !out.historyDeleted && !out.noLogs ? Math.min(out.activeDays / workdays, 1) : null;

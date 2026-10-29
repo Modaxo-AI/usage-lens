@@ -2,7 +2,10 @@
 // Team dashboard: everything here comes from people's merged export files
 // (claude_usage/team.py), never from this machine's own logs.
 
-const SERIES_VARS = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6','--series-7','--series-8'];
+// Nine, because a chart names up to nine series before the rest go under "Other"
+// (--series-9 is defined in team.html): a ninth that reused the first colour would
+// read as the same person or model.
+const SERIES_VARS = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6','--series-7','--series-8','--series-9'];
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 // Names, emails, project paths and file names all come from other people's
 // files, so nothing reaches innerHTML unescaped.
@@ -361,6 +364,14 @@ function renderTrend() {
   upsert('trend', document.getElementById('trendChart'), { data, options });
 }
 
+// A week no selected person's exports touch is unknown, not a week of no use: the
+// model and repository charts leave it undrawn, as Team spend does.
+function coveredWeekFn() {
+  const intervals = coverageIntervals(PAYLOAD.sources);
+  const covers = selectedPeople().flatMap(p => personIntervals(p, intervals[p.person]));
+  return w => coveredWeek(covers, w);
+}
+
 // Team-wide model use by week: everyone selected, added together, stacked by
 // exact model. Cost or output tokens (every request draws on usage, its whole
 // context included, so output tokens alone don't measure the allowance).
@@ -379,10 +390,11 @@ function renderModelTrend() {
   const ranked = Object.keys(totals).filter(k => totals[k] > 0)
     .sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
   const named = ranked.slice(0, ranked.length === 9 ? 9 : 8), rest = ranked.slice(named.length);
+  const seen = coveredWeekFn();
   const datasets = named.map((label, i) => ({ label, backgroundColor: cssVar(SERIES_VARS[i % SERIES_VARS.length]),
-    data: weeks.map(w => by[label + '|' + w] || 0) }));
+    data: weeks.map(w => seen(w) ? by[label + '|' + w] || 0 : null) }));
   if (rest.length) datasets.push({ label: 'Other', backgroundColor: cssVar('--other'),
-    data: weeks.map(w => rest.reduce((s, label) => s + (by[label + '|' + w] || 0), 0)) });
+    data: weeks.map(w => seen(w) ? rest.reduce((s, label) => s + (by[label + '|' + w] || 0), 0) : null) });
   const fmt = tokens ? fmtTokens : fmtCost0;
   const options = { responsive: true, maintainAspectRatio: false,
     plugins: { legend: { display: true }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw)}` } } },
@@ -441,8 +453,9 @@ function renderRepoTrend() {
     const key = named.has(repo) ? repo : OTHER;
     by[key + '|' + r[W.week]] = (by[key + '|' + r[W.week]] || 0) + r[W.cost];
   });
+  const seen = coveredWeekFn();
   const data = { labels: weeks.map(shortDay), datasets: top.map((r, i) => ({ label: repoLabel(r),
-    data: weeks.map(w => by[(r.other ? OTHER : r.repo) + '|' + w] || 0),
+    data: weeks.map(w => seen(w) ? by[(r.other ? OTHER : r.repo) + '|' + w] || 0 : null),
     backgroundColor: r.other ? cssVar('--other') : cssVar(SERIES_VARS[i % SERIES_VARS.length]) })) };
   const options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } },
     scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: v => fmtCost0(v) } } } };
@@ -481,8 +494,23 @@ function renderPerDay() {
   }).join('');
 }
 
+// People (in the selection) with an export from before schema 13, optionally only
+// those that carry `file`. Their lines and tool errors are measured the old way.
+function olderSourcePeople(file) {
+  const ids = new Set((PAYLOAD.sources || []).filter(s => Number(s.schema_version) < 13 && personOk(s.person) &&
+    (!file || (s.files || []).includes(file))).map(s => s.person));
+  return [...ids].map(nameOf).sort((a, b) => a.localeCompare(b));
+}
 function renderOutput() {
   const tbody = document.querySelector('#outputTable tbody');
+  const notesEl = document.getElementById('outputNotes');
+  if (notesEl) {
+    const old = olderSourcePeople();
+    const newer = (PAYLOAD.sources || []).some(s => Number(s.schema_version) >= 13 && personOk(s.person));
+    notesEl.innerHTML = old.length ? `<p class="foot-note">Lines from ${old.map(esc).join(', ')} come from Claude Code's own counter ` +
+      `(their exports are from before schema 13)${newer ? ', while the rest are counted per edit: two different measures sit in this table, so compare lines across them with care' : ''}. ` +
+      `Ask them to re-export for per-edit lines.</p>` : '';
+  }
   const prs = (PAYLOAD.prs || []).filter(r => personOk(r.person) && r.opened_on && weekOk(mondayOf(r.opened_on + 'T12:00:00')));
   // What the sessions that started in these weeks cost in all, for the line-data share.
   const started = PAYLOAD.session_costs ? PAYLOAD.session_costs.filter(r => personOk(r[0]) && weekOk(r[1])) : null;
@@ -675,12 +703,16 @@ function renderFriction() {
   if (res.neverWorked.length) parts.push(`MCP tool names that never once succeeded while their server's other tools did (a name the ` +
     `model got wrong, or a tool that isn't available), left out of the server's rate: ` +
     esc(names(res.neverWorked, t => `${t.server}: ${t.tool} (${fmtInt(t.calls)} ${t.calls === 1 ? 'call' : 'calls'})`)) + '.');
-  if (res.invented.length) parts.push(`Tool names that aren't Claude Code built-ins and never succeeded (made up by the model, or not ` +
+  if (res.invented.length) parts.push(`Tool names that aren't in Claude Code's documented tool list and never succeeded (made up by the model, or not ` +
     `available), left out: ${esc(names(res.invented, t => `${t.tool} (${fmtInt(t.calls)})`))}.`);
   // Exports from before schema 7 carry no tool data: their people aren't zero-error people.
   const usedNow = new Set(weeklyRows().filter(r => r[W.cost] > 0).map(r => r[W.person]));
   const hasTools = new Set((PAYLOAD.sources || []).filter(s => (s.files || []).includes('tools')).map(s => s.person));
   const noTools = [...usedNow].filter(p => !hasTools.has(p)).map(nameOf).sort((a, b) => a.localeCompare(b));
+  // Before schema 13 a refused call (a permission denied, a hook that blocked it) was counted as an error.
+  const oldTools = olderSourcePeople('tools');
+  if (oldTools.length) parts.push(`Tool errors from ${oldTools.map(esc).join(', ')} (exports from before schema 13) still count refused calls ` +
+    `(a permission denied, a hook that blocked it) as errors, so their rates read higher than the rest. Ask them to re-export.`);
   if (noTools.length) parts.push(`No tool data from ${noTools.map(esc).join(', ')} (their exports are from before schema 7: ask them to re-export), so their errors are not counted here.`);
   if (notes) notes.innerHTML = parts.map(p => `<p class="foot-note">${p}</p>`).join('');
 }
@@ -707,13 +739,17 @@ function renderTiles() {
   const noLogs = ranged.filter(r => r.noLogs).length;
   const active = ranged.length - idle - uncovered - deleted - noLogs;
   const use = median(ranged.map(r => r.seatUse).filter(v => v != null));
+  const floor = ranged.some(r => r.seatUse != null && r.lower);
   const hitPeople = new Set(limits.map(l => l.person)).size;
   const valueMedian = median(ranged.map(r => r.value).filter(v => v != null));
   const value = teamValue(ranged);
   const tiles = [
     ['People', fmtInt(people.length), `${active} active · ${idle} no activity in these weeks` + (uncovered ? ` · ${uncovered} not covered by these weeks` : '') +
       (deleted ? ` · ${deleted} with CLI history deleted` : '') + (noLogs ? ` · ${noLogs} export with no logs` : '')],
-    ['Median seat use', fmtPct(use), 'active days ÷ workdays, selected weeks'],
+    // "≥" when a person in the median worked on two machines: their days are the busier
+    // machine's, a floor, and a median of floors with exact figures is still a floor.
+    ['Median seat use', (use != null && floor ? '≥' : '') + fmtPct(use),
+     'active days ÷ workdays, selected weeks' + (use != null && floor ? ' · ≥: some people worked on two machines, so their days are a floor' : '')],
     ['Usage (list price)', fmtCost0(cost), 'in the selected weeks'],
     ['Limit hits', fmtInt(limits.length), `${fmtInt(hitPeople)} ${hitPeople === 1 ? 'person' : 'people'}`],
     ['Locked out', fmtHours(locked.reduce((s, l) => s + l.blocked_hours, 0)),
@@ -772,8 +808,10 @@ function renderHeatmap() {
       }
       const level = max ? Math.max(0.08, c[metric] / max) : 0;
       const cls = (c.partial ? ' partial' : '') + (c.cliGap ? ' cli-gap' : '');
+      // An estimated week says what it could be: the busier machine's days (a floor) up to all machines' added.
+      const range = c.approx && c.lo != null && c.hi != null && c.lo !== c.hi ? `, between ${fmtInt(c.lo)} and ${fmtInt(c.hi)}` : '';
       const tip = `${personLabel(p)} · week of ${w}: ${fmtCost(c.cost)}, ${plural(c.requests, 'request')}, ` +
-        `${c.approx ? '≈' : ''}${plural(c.days, 'active day')}${c.approx ? ' (estimated)' : ''}${c.partial ? ' · part-week' : ''}${c.cliGap ? ' · CLI history deleted' : ''}`;
+        `${c.approx ? '≈' : ''}${plural(c.days, 'active day')}${c.approx ? ' (estimated' + range + ')' : ''}${c.partial ? ' · part-week' : ''}${c.cliGap ? ' · CLI history deleted' : ''}`;
       const text = (metric === 'days' && c.approx ? '≈' : '') + fmt(c[metric]);
       return `<td class="hm-cell${cls}" style="--hm:${level.toFixed(3)}" title="${esc(tip)}">${esc(text)}</td>`;
     }).join('');
@@ -933,7 +971,7 @@ function renderPeople() {
     const note = r.covered ? '' : ' <span class="foot-note" style="margin:0">not covered by these weeks</span>';
     const badges = (r.idle ? ' <span class="badge warn">idle</span>' : '') +
       (r.historyDeleted ? ' <span class="badge warn" title="Claude Code had already deleted this person\'s CLI history for these weeks, so only Desktop work shows: whether they used the seat isn\'t known.">history deleted</span>' : '') +
-      (p.no_usage_window ? ' <span class="badge warn" title="Their export holds no usage and covers a single day; re-export with --since.">no usage in export</span>' : '');
+      (p.no_usage_window ? ` <span class="badge warn" title="${esc('Their export holds no usage and covers only ' + (p.window_days === 1 ? 'a single day' : plural(p.window_days || 0, 'day')) + '; re-export with --since.')}">no usage in export</span>` : '');
     const others = [...(versions[p.person] || [])].filter(v => v !== Number(p.schema_version)).sort((a, b) => a - b);
     const windows = (p.windows && p.windows.length ? p.windows : (p.window_from && p.window_to ? [[p.window_from, p.window_to]] : []))
       .map(([a, b]) => `${esc(a)} – ${esc(b)}`).join('<br>') || '? – ?';

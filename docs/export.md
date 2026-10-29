@@ -84,7 +84,7 @@ the columns added later, by schema.
 | `web_search_requests`, `web_fetch_requests` | Calls of Claude Code's own WebSearch and WebFetch tools, counted from tool calls (the API's server-side counters are always zero here) |
 | `tool_calls`, `tool_errors` | Tool calls by the main conversation **and its subagents**, and those that failed. **A refused call is not an error**: a call you, auto mode or a rule refused (`toolDenialKind`) is counted in `tool_calls` and in `tool_refusals`, never in `tool_errors`. The sessions sheet used to count the main conversation only (schema 12 and earlier), while the summary included subagents; from schema 13 both include them |
 | `prs_opened` | Pull requests opened. A PR is counted once, on the session with its **earliest** `pr-link`, and dated by it; the summary dates it by that link and the sessions sheet by the session. Summing either sheet gives the PR count |
-| `lines_added`, `lines_removed` | Lines the session's own edits added and removed (schema 13). Counted from the diff in each Edit/Write result (or, for a new file, its length), so a session that made no edit, or ran on a Claude Code version that doesn't write the diff, is **blank** rather than 0. Before schema 13 they were the CLI cost counter's totals, which have no date and may cover only part of a session. Summary rows carry the session's whole total in the week it started |
+| `lines_added`, `lines_removed` | Lines the session's own edits added and removed (schema 13). Counted from the diff in each Edit/Write result (or, for a new file, its length), so a session that made no edit, or ran on a Claude Code version that doesn't write the diff, is **blank** rather than 0. Before schema 13 they were the CLI cost counter's totals, which have no date and may cover only part of a session. Summary rows carry each edit's lines in the week it was made |
 | `models_used`, `skills_used` | Summary: the model ids and the skill names (a skill's own name, e.g. `superpowers:brainstorming`) that had requests in the row. Sessions sheet: `models` and `skills`, the same for the session |
 | `subagents` | Sessions sheet: how many subagents the session ran. A subagent transcript copied under two parent sessions counts once |
 | `permission_mode` | The permission mode the session most often ran in (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`), from the mode on each of its user records. Before schema 13 this was Claude Code's editor-input mode (always `normal`) and carried no information |
@@ -96,7 +96,7 @@ view can summarise habits across people. They are counts and dollars only.
 
 **Summary file**, per person x project x week. Per-request measures land in the
 week they happened. The `sessions_*` counts land in the week each session
-started, like lines and PRs.
+started, like PRs. Lines changed land in the week of the edit, like requests.
 
 | Column | What it is |
 |---|---|
@@ -502,8 +502,9 @@ Three conventions make that visible rather than silent:
 Two attribution rules worth knowing:
 
 - **`sessions_started` vs `sessions_active`.** Cost and tokens are per-request
-  and split across weeks naturally; a session's own facts (active time, lines,
-  PRs) are attributed to the week it *started*. So a week can legitimately show
+  and split across weeks naturally; a session's own facts (active time, PRs)
+  are attributed to the week it *started*, while lines changed are counted by the
+  week of each edit. So a week can legitimately show
   cost with `sessions_started = 0` — that is a long session continuing. The
   `sessions_active` column is the count most people expect next to cost.
 - **Fork and resume copies are excluded**, so no session is listed twice — with

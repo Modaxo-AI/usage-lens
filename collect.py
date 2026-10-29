@@ -418,7 +418,8 @@ def main():
         # one output of this tool meant to be handed to someone else.
         print("\nThese files identify you by email and describe your work:"
               " session titles\n(written by the model from your own conversations),"
-              " full project paths, branch\nnames and PR links."
+              " full project paths, branch\nnames, PR links, and the names of the"
+              " skills, MCP servers, tools and subagent\ntypes you used."
               " They contain no prompts, no replies, and no code.")
         if args.no_titles:
             print("Session titles were omitted (--no-titles).")

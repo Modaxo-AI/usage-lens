@@ -651,6 +651,8 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
     def bucket(day, project):
         return acc[(_week_start(day), project)]
 
+    session_week_cost = defaultdict(float)  # (session, week) -> cost, for the lines below
+
     # ---- request-level: cost, tokens, models, skills -------------------- #
     for r in payload["usage"]:
         sid = r[1]
@@ -664,6 +666,7 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         b["active_days"].add(day)
         b["requests"] += r[12]
         b["cost"] += r[13]
+        session_week_cost[(sid, _week_start(day))] += r[13]
         if r[4] != -1:
             b["sub_cost"] += r[13]
         b["input"] += r[5]
@@ -715,8 +718,10 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         if _opened_prs(s):
             b["with_prs"] += 1
             b["cost_with_prs"] += session_cost
-        # Blank, not zero, when the signal was never recorded.
-        if s.get("lines_added") is not None:
+        # Blank, not zero, when the signal was never recorded. (From the
+        # per-edit rows below, by the day of each edit; a payload without them
+        # falls back to the session's total, in its starting week.)
+        if "lines" not in payload and s.get("lines_added") is not None:
             b["lines_added"] = (b["lines_added"] or 0) + s["lines_added"]
             b["lines_removed"] = (b["lines_removed"] or 0) + (s.get("lines_removed") or 0)
             b["with_lines"] += 1
@@ -740,6 +745,23 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         if h.get("instructions") is not None:
             b["h_instructions"] += 1
             b["h_project_md"] += 1 if "Project" in h["instructions"] else 0
+
+    # Lines changed, by the day of each edit (like requests and tool calls), not
+    # by the week the session started: a long session's lines land in the weeks
+    # it wrote them. The cost beside them is the session's cost in that same
+    # week, so lines per dollar compares like with like.
+    line_weeks = set()
+    for bucket_key, sid, added, removed in payload.get("lines") or []:
+        day = _day(bucket_key)
+        if sid not in project_of or not _in_range(day, since, until):
+            continue
+        b = bucket(day, project_of[sid])
+        b["lines_added"] = (b["lines_added"] or 0) + (added or 0)
+        b["lines_removed"] = (b["lines_removed"] or 0) + (removed or 0)
+        if (sid, _week_start(day)) not in line_weeks:
+            line_weeks.add((sid, _week_start(day)))
+            b["with_lines"] += 1
+            b["cost_with_lines"] += session_week_cost.get((sid, _week_start(day)), 0.0)
 
     # PRs are counted from the payload's URL-deduped list rather than from
     # session membership. A handful of PRs survive only inside a fork/resume

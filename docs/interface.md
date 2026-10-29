@@ -18,7 +18,10 @@ the top 15 of the tools with at least 10 calls, and its note says how many more
 tools (and errors) are not shown and how many smaller tools are not ranked. It is
 a count of errors coloured by error rate, not a list of rates. The *MCP server
 rollup* covers MCP servers only: Claude Code's own tools are left out, with their
-total in the note, so they don't swamp the integrations. Every other chart --
+total in the note, so they don't swamp the integrations. Server names are tidied so one
+service isn't split (a `claude_ai_` or `plugin_` prefix and a trailing `_2` are dropped);
+a connector named only by an id can't be matched to the same service under its name and
+shows as "connector" plus the id's first characters. Every other chart --
 models, token types, subagent types and depth, entry points, permission modes --
 shows every category. The Overview's data table, the Skills, Tools, Agents and
 Sessions tables and the pull-request table are the table views; the Habits tab and
@@ -29,7 +32,7 @@ Quick ranges count back from the last day that has data, not from today, and the
 buttons say so. A date chip appears only for a range that is neither the default
 (the last 5 days of data) nor *All*. The filters (dates, bucket size, project, model)
 are also kept in the address, so a view can be bookmarked or shared and survives a
-reload. The charts re-colour when the OS switches between light and dark.
+reload. A value the page can't use (a date outside the data, an unknown project, a grain that does not fit) is dropped from the address as well as from the view. The charts re-colour when the OS switches between light and dark.
 
 The Overview tab's **Usage limits & friction** card shows where this limit week
 stands against the estimated weekly allowance (with a projected hit time when on

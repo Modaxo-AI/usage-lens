@@ -658,8 +658,10 @@ def _seat_price(person, prices):
         return None
     seat = person.get("seat_tier")
     keys = [person.get("rate_limit_tier"), seat, "default"]
-    if seat and str(seat).startswith("enterprise") and seat in prices["prices"]:
-        keys = [seat] + keys
+    if seat and str(seat).startswith("enterprise"):
+        # The rate-limit tier of an enterprise seat is a consumer plan's name: its
+        # price is not what the enterprise seat costs, so it is never used for one.
+        keys = [seat, "default"]
     for key in keys:
         if key and key in prices["prices"]:
             return prices["prices"][key]
@@ -676,6 +678,12 @@ def apply_seat_value(people, prices):
         p["seat_cost_in_window"] = None
         p["value_multiple"] = None
         if price is None or not (p.get("window_from") and p.get("window_to")):
+            continue
+        if p.get("no_usage_window"):
+            # An export from a machine with no logs holds no usage: 0.00x says nothing about the seat.
+            days = p.get("window_days")
+            if days is not None:
+                p["seat_cost_in_window"] = round(price / _PER_DAY[prices["per"]] * max(days, 0), 2)
             continue
         # The days the exports cover, not min(from)..max(to): the days between two
         # exports are neither counted nor paid for (the dashboard does the same).
@@ -1953,8 +1961,10 @@ def merge(exports, problems=(), prices=None, skipped=None, prices_rejected=False
     elif prices:
         unpriced = [p for p in people if p["seat_price"] is None]
         if unpriced:
+            # An enterprise seat is priced by its seat tier alone (its rate-limit tier is never used).
             tiers = sorted({tierid for p in unpriced
-                            for tierid in (p.get("rate_limit_tier"), p.get("seat_tier")) if tierid})
+                            for tierid in ((p.get("seat_tier"),) if str(p.get("seat_tier") or "").startswith("enterprise")
+                                           else (p.get("rate_limit_tier"), p.get("seat_tier"))) if tierid})
             warnings.append({"level": "warn", "message":
                 f"Value per seat is blank for {_named(unpriced)}: "
                 + (f"their tier ({', '.join(tiers)}) has no price" if tiers else "they have no recorded tier")
@@ -1973,7 +1983,7 @@ def merge(exports, problems=(), prices=None, skipped=None, prices_rejected=False
             warnings.append({"level": "warn", "message":
                 f"{p['display_name']} ({p['person']}): the export holds no usage and covers only "
                 f"{p['window_from']} .. {p['window_to']} ({p['window_days']} day(s)), so earlier weeks show "
-                "as not covered and the seat can only be called idle for those days. Claude Code deletes "
+                "as not covered, and the seat is not called idle (nothing here shows whether it was used). Claude Code deletes "
                 "transcripts after 30 days, or its logs aren't on that machine. Re-export with "
                 "`python3 collect.py --export --since YYYY-MM-DD` (the first day you want covered), or "
                 "from the machine that has the logs."})
@@ -2207,6 +2217,8 @@ def _people(keys, machines, by_person, files):
             row["window_days"] <= getattr(context, "NO_LOGS_WINDOW_DAYS", 30)
             and not cost and not row.get("requests")
             and not row.get("person_active_days") and not row.get("last_active_date"))
+        if row["no_usage_window"]:
+            row["seat_use"] = None   # nothing to measure: not 0.0 (the page shows "—" too)
         people.append(row)
     _unique_display_names(people)
     return people
@@ -2280,7 +2292,9 @@ def overage_forecast(merged, today=None, basis_weeks=4):
             weeks.append(w)
         w += _dt.timedelta(days=7)
     series = [[w.isoformat(), round(weekly.get(w.isoformat(), 0.0), 2)] for w in weeks]
-    complete = [(w, v) for w, (_, v) in zip(weeks, series)
+    # The rate averages the weeks' unrounded sums, as the page does: averaging the
+    # cent-rounded weeks could land a cent away from what the page shows.
+    complete = [(w, weekly.get(w.isoformat(), 0.0)) for w in weeks
                 if w + _dt.timedelta(days=6) <= covered_to and w + _dt.timedelta(days=6) < today]
     basis = complete[-basis_weeks:]
     rate = sum(v for _, v in basis) / len(basis) if basis else 0.0

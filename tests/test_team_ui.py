@@ -297,6 +297,9 @@ class TestTabs(unittest.TestCase):
 
 
 PEOPLE = [{"person": "a@x.com", "display_name": "Ann <b>A</b>"}, {"person": "b@x.com", "display_name": "Bo"}]
+# The same people with an export window: the model and repository trends leave a week no
+# selected export touches blank, so their tests need the weeks to be covered.
+PEOPLE_COVERED = [dict(p, window_from="2026-08-31", window_to="2026-09-27") for p in PEOPLE]
 
 
 class TestNamesNotCounts(unittest.TestCase):
@@ -411,7 +414,7 @@ class TestNewViews(unittest.TestCase):
         self.assertEqual(active["data"], [2, 1])
 
     def test_repo_trend_has_a_series_per_repo_by_week(self):
-        res = run_js(TEAM, _setup(people=PEOPLE, weekly=WEEKLY) +
+        res = run_js(TEAM, _setup(people=PEOPLE_COVERED, weekly=WEEKLY) +
                      "state.from = '2026-09-14'; state.to = '2026-09-21'; renderRepoTrend();"
                      "out(charts_made[charts_made.length - 1]);")
         series = {d["label"]: d["data"] for d in res["data"]["datasets"]}
@@ -576,7 +579,7 @@ class TestPolishedViews(unittest.TestCase):
     def test_repo_trend_keeps_a_real_repo_named_other_apart(self):
         weekly = [_row("a@x.com", "2026-09-14", f"gh/r{i}", 100.0 - i) for i in range(10)]
         weekly.append(_row("a@x.com", "2026-09-14", "Other", 95.5))
-        res = run_js(TEAM, _setup(people=PEOPLE, weekly=weekly) +
+        res = run_js(TEAM, _setup(people=PEOPLE_COVERED, weekly=weekly) +
                      "state.from = '2026-09-14'; state.to = '2026-09-14'; renderRepoTrend();"
                      "out(charts_made[charts_made.length - 1].data.datasets.map(d => [d.label, d.data[0]]));")
         labels = dict(res)
@@ -649,7 +652,7 @@ class TestModelTrend(unittest.TestCase):
     WEEKLY = [_row("a@x.com", "2026-09-14", "r", 35.0), _row("b@x.com", "2026-09-21", "r", 7.0)]
 
     def _chart(self, metric="cost", people=(), models=None):
-        snippet = (_setup(people=PEOPLE, weekly=self.WEEKLY, models=models or self.MODELS) +
+        snippet = (_setup(people=PEOPLE_COVERED, weekly=self.WEEKLY, models=models or self.MODELS) +
                    f"state.people = {json.dumps(list(people))}; state.modelMetric = '{metric}';"
                    "state.from = '2026-09-14'; state.to = '2026-09-21'; renderModelTrend();"
                    "const c = charts_made[charts_made.length - 1];"

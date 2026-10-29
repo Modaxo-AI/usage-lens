@@ -172,7 +172,13 @@
   dates them by the edit, so a date range holds the lines written inside it.
   Changes made outside Claude's edit tools — a shell command that rewrites a
   file, a formatter, a `git` checkout, or your own editor — aren't counted, and a
-  failed edit counts nothing. A subagent's edits count for its parent session.
+  failed or refused edit counts nothing. A subagent's edits count for its parent
+  session; their results carry no diff, so they are counted from the call's own
+  input (old against new text for an Edit, the content for a Write), in memory.
+  That is exact for an Edit that changes one place; an Edit with `replace_all`
+  that changes several places counts its change once, and a Write over an
+  existing file counts every line of the new content as added (the old file is
+  not in the call), so a rewritten file reads high.
   Versions before 1.1.0 read Claude Code's `cost-state` line counter instead,
   which has no timestamp, was written mostly when a session closed and is
   missing from many desktop sessions; this tool no longer uses it for lines.

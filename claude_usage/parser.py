@@ -31,7 +31,11 @@ memory with only the result kept:
   the yes/no is kept; the path is never stored.
 - Lines changed. An edit's result carries the diff it made. The `+` and `-`
   lines of its hunks (or, for a new file, the lines of its content) are
-  counted in memory; only the two numbers are kept, never a line.
+  counted in memory; only the two numbers are kept, never a line. A subagent's
+  edit result carries no diff, so its count comes from the call's own input:
+  the old and new text of an Edit/MultiEdit are compared (difflib), a Write's
+  content and a NotebookEdit's new source are counted. The text is dropped as
+  soon as the two numbers are known.
 - Slash commands that start a skill. A user record opening with
   `<command-name>` has its command name read (not its arguments) and kept; the
   aggregate uses it only when the name is a skill seen elsewhere in the logs.
@@ -43,6 +47,7 @@ memory with only the result kept:
 """
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from collections import Counter
@@ -75,8 +80,11 @@ _NOT_PROMPT_PREFIXES = (
 # counts; slash commands that start a skill; permission modes come from user
 # records (not the editor-mode `mode` record); edits outside the session's
 # folder or in scratch paths are notes; check categories are classified per
-# command segment, quote-aware, with more runners.
-FACTS_VERSION = 19
+# command segment, quote-aware, with more runners. 20: a subagent edit's lines are
+# counted from the call's input (its result carries no diff); slash commands
+# are read past a leading `<command-message>`; edits inside Claude Code worktrees
+# are code; refused or failed edits are not edits; more test runners.
+FACTS_VERSION = 20
 
 
 # Re-exported here: the parser is where untrusted fields are read.
@@ -262,7 +270,11 @@ def _starts_with(content, prefix) -> bool:
     return False
 
 
-_COMMAND_NAME = re.compile(r"\s*<command-name>\s*/?([A-Za-z0-9][\w:.-]{0,79})\s*</command-name>")
+# Claude Code writes `<command-message>NAME</command-message>` and then
+# `<command-name>/NAME</command-name>`: the message element may come first.
+_COMMAND_NAME = re.compile(
+    r"\s*(?:<command-message>[^<]{0,300}</command-message>\s*)?"
+    r"<command-name>\s*/?([A-Za-z0-9][\w:.-]{0,79})\s*</command-name>")
 
 
 def _command_name(content):
@@ -303,6 +315,74 @@ def _diff_lines(result):
                 elif line.startswith("-"):
                     removed += 1
     return added, removed
+
+
+# The most lines compared line by line (difflib is quadratic); a bigger edit is
+# compared after its shared head and tail are cut, and what is left is counted
+# as removed and added.
+_MAX_DIFF_LINES = 1500
+
+
+def _text_lines(text) -> list:
+    """The lines of a string (a trailing newline doesn't make an extra one)."""
+    if not isinstance(text, str) or not text:
+        return []
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _compare_text(old, new):
+    """(lines added, lines removed) turning `old` into `new`."""
+    a, b = _text_lines(old), _text_lines(new)
+    head = 0
+    while head < len(a) and head < len(b) and a[head] == b[head]:
+        head += 1
+    tail = 0
+    while tail < len(a) - head and tail < len(b) - head and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    a, b = a[head:len(a) - tail], b[head:len(b) - tail]
+    if not a or not b or len(a) > _MAX_DIFF_LINES or len(b) > _MAX_DIFF_LINES:
+        return len(b), len(a)
+    added = removed = 0
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op in ("replace", "delete"):
+            removed += i2 - i1
+        if op in ("replace", "insert"):
+            added += j2 - j1
+    return added, removed
+
+
+def _input_lines(tool, inp):
+    """(lines added, lines removed) an edit call asks for, from the call's own
+    input, or None when it holds nothing to count. Used when the call's result
+    carries no diff (a subagent's doesn't). Only the two numbers leave."""
+    if not isinstance(inp, dict):
+        return None
+    if tool == "Edit":
+        if isinstance(inp.get("old_string"), str) and isinstance(inp.get("new_string"), str):
+            return _compare_text(inp["old_string"], inp["new_string"])
+    elif tool == "MultiEdit":
+        edits = inp.get("edits")
+        if isinstance(edits, list):
+            added = removed = 0
+            for e in edits:
+                if (isinstance(e, dict) and isinstance(e.get("old_string"), str)
+                        and isinstance(e.get("new_string"), str)):
+                    a, r = _compare_text(e["old_string"], e["new_string"])
+                    added += a
+                    removed += r
+            return added, removed
+    elif tool == "Write":
+        if isinstance(inp.get("content"), str):
+            return len(_text_lines(inp["content"])), 0
+    elif tool == "NotebookEdit":
+        # The old cell source isn't in the call: a replaced cell counts its new
+        # lines only, and a deleted one counts nothing.
+        if isinstance(inp.get("new_source"), str) and inp.get("edit_mode") != "delete":
+            return len(_text_lines(inp["new_source"])), 0
+    return None
 
 
 def _has_tool_result(content) -> bool:
@@ -383,6 +463,7 @@ def parse_file(path: str, kind: str):
     streak = None    # [first tool_use_id, ts, length] of the current error run
     pending_commands = []  # slash commands waiting for the response that answers them
     edit_seen = set()      # tool_use_ids whose diff has been counted
+    edit_inputs = {}       # tool_use_id -> (added, removed) from the call's input
     last_turn = None  # "prompt" | "assistant" | "interrupt", for how the file ends
 
     try:
@@ -643,6 +724,10 @@ def parse_file(path: str, kind: str):
                             elif name in EDIT_TOOLS:
                                 # The path is tested in memory and dropped.
                                 inp = _dict(block.get("input"))
+                                if bid not in edit_inputs:
+                                    # Counted now, in memory, for a result that
+                                    # carries no diff; the text is not kept.
+                                    edit_inputs[bid] = _input_lines(name, inp)
                                 if is_note_edit(inp.get("file_path") or inp.get("notebook_path"),
                                                 (d.get("cwd"), facts.first_cwd)):
                                     facts.note_edits.append(bid)
@@ -667,13 +752,18 @@ def parse_file(path: str, kind: str):
                                     streak[2] += 1
                                 else:
                                     streak = _close_streak(facts, streak)
-                            if (not is_error and not denied and n_results == 1
+                            if (not is_error and not denied
                                     and tuid not in edit_seen
                                     and facts.tool_calls.get(tuid, "Edit") in EDIT_TOOLS):
                                 # Counted here, in memory; only the two numbers
                                 # are kept (see the module docstring).
                                 edit_seen.add(tuid)
-                                counted = _diff_lines(d.get("toolUseResult"))
+                                # The record's diff belongs to its one result; with
+                                # several, only the calls' own inputs can say.
+                                counted = (_diff_lines(d.get("toolUseResult"))
+                                           if n_results == 1 else None)
+                                if counted is None:
+                                    counted = edit_inputs.get(tuid)
                                 if counted is not None:
                                     facts.edit_lines.append([tuid, ts or facts.last_ts, *counted])
                             facts.tool_errors[tuid] = is_error

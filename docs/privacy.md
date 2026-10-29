@@ -48,24 +48,35 @@ Each is decided in memory, and only the result is kept:
   the text never reaches the parsed facts.
 - **Note edits.** An edited file's path is tested for being prose (`.md`,
   `.txt`, `.rst` and the like), an image (`.svg`), one of Claude Code's own files
-  (anything under a `.claude` folder), a throwaway file in a temp or scratch
+  (anything under a `.claude` folder, except a Claude Code worktree,
+  `<repo>/.claude/worktrees/<name>/`, which is a checkout of your project and is
+  code), a throwaway file in a temp or scratch
   folder, or a file outside the folder the session runs in, so writing a memory
   file or a scratch script after the last test doesn't count as an unchecked
   edit. Only the yes/no is kept; the path is never stored.
 - **Lines changed, measured in memory.** An edit's result carries the diff it
   made. The parser counts its `+` and `-` lines (for a file the call created, the
   lines of its content) and keeps only those two numbers, with the edit's time:
-  never a line, a path or any file content. This replaces Claude Code's own
+  never a line, a path or any file content. A subagent's edit result carries no
+  diff, so for those (and only those) the parser reads the call's own input in
+  memory: it compares an Edit's or MultiEdit's old and new text, counts a Write's
+  content lines or a NotebookEdit's new-source lines, keeps the two numbers and
+  drops the text on the spot. The call is matched to its result by the tool-use
+  id, and counted only when the result is neither an error nor a refusal. This replaces Claude Code's own
   `totalLinesAdded`/`totalLinesRemoved` counter, which has no time. Like response
   size, it is a count taken from content in memory; `tests/test_p3_backend.py`
   plants a sentinel in a diff and asserts it reaches neither the payload nor the
   parse cache.
 - **Slash commands that start a skill.** A record that starts with
-  `<command-name>` has its command name (`next-task`, not what was typed after it)
-  read and kept, so a skill started that way counts as used. The name is used only
-  when it is also a skill seen elsewhere in your logs (a Skill tool call or a
-  request attributed to it); `/model`, `/compact` and the like are dropped in the
-  dashboard payload. The sentinel test also covers the arguments.
+  `<command-name>` (optionally after Claude Code's own `<command-message>`
+  element) has its command name (`next-task`, not what was typed after it) read
+  and kept, so a skill started that way counts as used. Which names are skills
+  isn't known until every file has been read, so the parse cache keeps the name
+  of every slash command you ran (a custom command is named by you: `/deploy-acme`
+  is a name). The aggregate then uses only the names that are also a skill seen
+  elsewhere in your logs (a Skill tool call or a request attributed to it);
+  `/model`, `/compact` and the like never reach the payload, `data.json`, a static
+  build or any CSV. The arguments are never read. The sentinel test covers both.
 - **Refusals.** A tool result flagged with Claude Code's own `toolDenialKind` is
   recorded as a refusal (the call, not its content), so it isn't counted as an
   error.
@@ -113,7 +124,10 @@ branch names and PR repositories/URLs — all of which otherwise carry absolute
 filesystem paths and client or feature names. The branch name `HEAD` (git's name
 for a detached checkout) is kept: it names nothing, and the dashboard shows it as
 "(detached)". The build time is written in UTC, so it no longer carries your
-machine's UTC offset. Skill, MCP server, tool and subagent-type names are kept
+machine's UTC offset. The usage, tool and health times are still in the zone the
+data was built in (they are what puts a request on a day), and the session start
+times are UTC, so a reader who lines the two up can work out your time zone; the
+redaction does not hide where you are, only what you worked on. Skill, MCP server, tool and subagent-type names are kept
 (and the names of the slash commands that matched a skill). `data.json` is never
 redacted.
 

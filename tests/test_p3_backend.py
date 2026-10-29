@@ -246,7 +246,9 @@ class TestCallingModelAndSkills(_Scanned):
         def command(uuid, ts, name):
             return {"type": "user", "uuid": uuid, "timestamp": ts, "message": {
                 "role": "user", "content":
-                f"<command-name>/{name}</command-name>\n<command-args>{SENTINEL}</command-args>"}}
+                # The shape Claude Code writes: the message element, then the name.
+                f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>\n"
+                f"<command-args>{SENTINEL}</command-args>"}}
         attributed = _response("m2", _ts(2))
         attributed["attributionSkill"] = "next-task"
         answer = _response("m1", _ts(1))

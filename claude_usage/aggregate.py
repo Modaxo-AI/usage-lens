@@ -763,23 +763,30 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
                       reverse=True)
     # What a session lists is every PR it linked; each entry is the PR's own row,
     # whose session_id names the session it is attributed to.
-    # A link written before the transcript's own first record is part of a copied
-    # prefix, so it is not the session's own -- unless no other session linked
-    # that PR, when the copy is all that is left of it.
-    linkers = Counter(url for links in session_links.values() for url in links)
-    own_start, seen_uuids = {}, set()  # first record each file wrote itself
-    for sid, facts in ordered:
-        if facts.kind == "main":
-            fresh = [(uuid, ts) for uuid, ts in getattr(facts, "activity", None) or []
-                     if uuid is not None and uuid not in seen_uuids]
-            seen_uuids.update(uuid for uuid, _ in fresh)
-            own_start[sid] = min((ts for _, ts in fresh), default=None)
+    # A link is a copy when another transcript that started earlier holds the
+    # same record (the same PR at the same instant): a fork or resume repeats its
+    # parent's records. A link written before a transcript's own first record is
+    # not proof of that -- a session can link a PR some other session also linked
+    # at a different time -- so only the same (PR, time) counts. When no other
+    # session holds it, the link is the session's own.
+    holders = defaultdict(list)  # (url, timestamp) -> [(file start, rank, session)]
+    for rank, (sid, facts) in enumerate(ordered):
+        if facts.kind != "main":
+            continue
+        for url, link in session_links.get(sid, {}).items():
+            if link["timestamp"]:
+                holders[(url, link["timestamp"])].append((facts.first_ts or "~", rank, sid))
     prs_by_session = {}
     for sid, links in session_links.items():
-        prs_by_session[sid] = [
-            prs_by_url[url] for url, link in links.items()
-            if not (linkers[url] > 1 and link["timestamp"]
-                    and (own_start.get(sid) is None or link["timestamp"] < own_start[sid]))]
+        mine = {}
+        for url, link in links.items():
+            if link["timestamp"]:
+                others = [h for h in holders[(url, link["timestamp"])] if h[2] != sid]
+                started = next(h for h in holders[(url, link["timestamp"])] if h[2] == sid)[:2]
+                if any(h[:2] < started for h in others):
+                    continue
+            mine[url] = prs_by_url[url]
+        prs_by_session[sid] = list(mine.values())
 
     subagents_by_session = Counter(a["session_id"] for a in unique_agents)
 

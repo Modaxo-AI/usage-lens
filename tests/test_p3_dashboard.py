@@ -571,7 +571,7 @@ class TestToolsTab(unittest.TestCase):
         out = self._labels([("bash", 17, 17, "m"), ("Bash", 200, 20, "m")])
         self.assertNotIn("bash", out["err"])
         self.assertIn("bash (17 calls, none succeeded)", out["note"])
-        self.assertIn("isn't a Claude Code built-in", out["note"])
+        self.assertIn("isn't in Claude Code's documented tool list", out["note"])
 
     def test_tm4_a_stray_mcp_tool_name_is_listed_apart_and_not_added_to_its_servers_rate(self):
         out = self._labels([("mcp__jira__getIssue", 40, 0, "m"), ("mcp__jira__getIsue", 38, 38, "m"),

@@ -650,7 +650,9 @@ class TestSeatUseBounds(unittest.TestCase):
         p = dict({"person": "a", "window_from": "2026-09-14", "window_to": "2026-09-27"}, **OLD_ONE_MACHINE)
         got = js(f"(() => {{ const b = activeBasis([{json.dumps(p)}], {json.dumps(THREE_PROJECTS)}, {{}}); "
                  f"return weekDaysFigure(b['a'], '2026-09-14', []); }})()")
-        self.assertEqual(got, {"days": 4, "approx": True})
+        self.assertEqual((got["days"], got["approx"]), (4, True))
+        self.assertLessEqual(got["lo"], 4)      # the range the cell's tooltip gives (T7)
+        self.assertGreaterEqual(got["hi"], 4)
 
 
 class TestCoverageIntervals(unittest.TestCase):

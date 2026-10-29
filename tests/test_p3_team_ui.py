@@ -204,8 +204,16 @@ class TestNoLogsExport(unittest.TestCase):
         self.assertFalse(res["idle"])
         self.assertIsNone(res["seatUse"])
 
-    def test_a_thirty_day_idle_window_is_idle(self):
+    def test_a_thirty_day_no_logs_window_is_not_idle_either(self):
+        # (T1) The same rule for both schemas: the export holds no logs, so nothing says the seat is idle.
         p = {"person": "k", "window_from": "2026-08-29", "window_to": "2026-09-27", "window_days": 30, "no_usage_window": True}
+        res = run_js(F, f"out(personInRange({json.dumps(p)}, [], [], [], {{from: '2026-09-21', to: '2026-09-27'}}, null, "
+                        "{allRows: []}));")
+        self.assertTrue(res["noLogs"])
+        self.assertFalse(res["idle"])
+
+    def test_a_thirty_day_window_that_is_not_flagged_no_usage_is_idle(self):
+        p = {"person": "k", "window_from": "2026-08-29", "window_to": "2026-09-27", "window_days": 30}
         res = run_js(F, f"out(personInRange({json.dumps(p)}, [], [], [], {{from: '2026-09-21', to: '2026-09-27'}}, null, "
                         "{allRows: []}));")
         self.assertFalse(res["noLogs"])
@@ -409,7 +417,7 @@ class TestChartsAndTables(unittest.TestCase):
 
     def test_to12_the_model_trend_names_a_ninth_model_too(self):
         models = [self.model("a", WEEK, "x", 100.0 - i, f"claude-opus-5-{i}") for i in range(9)]
-        (chart,) = self.charts("renderModelTrend", people=[{"person": "a"}], models=models,
+        (chart,) = self.charts("renderModelTrend", people=[dict(WINDOW, person="a")], models=models,
                                weekly=[row("a", WEEK, "r", 1.0)])
         self.assertEqual(len(chart["sets"]), 9)
         self.assertNotIn("Other", [s["label"] for s in chart["sets"]])
@@ -481,7 +489,7 @@ class TestHeatmap(unittest.TestCase):
         weekly = [row("a", WEEK, "r", 5.0, exact=3, machine="m1"), row("a", WEEK, "r", 5.0, exact=3, machine="m2")]
         html = self.heat(weekly, metric="days", people=people)
         self.assertIn(">≈3</td>", html)
-        self.assertIn("(estimated)", html)
+        self.assertIn("(estimated, between 3 and 6)", html)   # the tooltip gives the range (T7)
 
     def test_sp16_one_active_day_is_singular(self):
         people = [dict(WINDOW, person="a")]

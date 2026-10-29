@@ -100,7 +100,8 @@ An export from a machine with **no logs** (Claude Code deletes CLI transcripts
 after 30 days) holds no usage, and covers only the short default window the tool
 gives it (30 days from schema 13, one day before). The merge names the person and
 says to re-export with `--since`, since weeks before the window show as not
-covered, and the page doesn't call a one-day empty export an idle seat.
+covered, and the page doesn't call an empty export of either length an idle seat (no
+seat use or multiple either).
 These are the whole-export-window figures that `team-people.csv` and
 `merge-report.txt` carry. On the dashboard, seat use, last active and idle are
 worked out for the selected weeks instead (see **People** under People & data, below),
@@ -202,7 +203,8 @@ People table.
 - **Tiles**: all of them follow the selected weeks: People (active, with no
   activity in these weeks, not covered by these weeks, and those whose CLI
   history was deleted for all the selected weeks or whose export holds no logs:
-  those are not idle, since nothing shows whether they used the seat), median seat use,
+  those are not idle, since nothing shows whether they used the seat), median seat use
+  (shown with "≥" when someone in it worked on two machines, whose days are a floor),
   Usage, Limit hits, Locked out, Extra usage and value per seat (the team's
   figure, with the median seat's below it).
 - **What stands out**: up to six findings, each linking to the tab with the
@@ -216,7 +218,8 @@ People table.
   model each request ran on ("Opus 5.5", "Sonnet 5.5"; a dated snapshot or 1M-context
   variant counts as its model), as list-price cost or output tokens. The 8 biggest
   models over the selected weeks are named and the rest are Other (a ninth is named
-  rather than made an "Other" of one). Output tokens are only what the model
+  rather than made an "Other" of one). A week none of the selected people's exports
+  touch is left blank (unknown, not zero), as in Team spend. Output tokens are only what the model
   wrote: Anthropic's costs page counts the whole conversation toward usage, so they
   aren't a measure of the allowance.
 - **How current the data is**: one row per person and machine (a second
@@ -233,7 +236,8 @@ People table.
   it (names and their cost there; someone under $0.50 in a repo isn't named). A
   session counts to the repo of its folder's git `origin`, else to the folder;
   spend tied to no folder is "(no project)".
-- **Repository spend by week**: the same, stacked by week.
+- **Repository spend by week**: the same, stacked by week; a week none of the
+  selected people's exports touch is left blank (unknown, not $0).
 - **Cost by model, by person**: cost by exact model (as the Overview's model chart
   is; the 8 biggest are named and the rest are Other), main vs subagent, or output tokens.
 - **Spend per active day**: cost in the selected weeks divided by active days,
@@ -259,7 +263,8 @@ People table.
   their exports": unknown, unlike a blank cell, which is a covered week with no
   activity). A week is a part-week only if every machine's piece of it was cut
   short; a second machine that covers it whole makes it whole. In the Active days
-  view an estimated cell shows "≈".
+  view an estimated cell shows "≈", and its tooltip gives the range the week can hold
+  (the busier machine's days up to all machines' added).
   Active days follow the same per-week rule as spend per active day: the exact
   `week_active_days` where present; else, for one machine, the estimate the
   export's own total and the week's bounds give (a week that isn't pinned shows
@@ -330,13 +335,16 @@ People table.
   The People column names only who hit errors, with how many each. Refusals (a
   permission denied, a hook that blocked a call) are not errors. Whether a name is
   "made up or unavailable" is decided by name, not by outcome: a tool name that
-  isn't a Claude Code built-in (the documented tool list, plus the older names) and
-  never once succeeded is left out and listed under the table. A real built-in that
+  isn't in Claude Code's documented tool list (plus the older names, and a few real
+  tools seen in logs that the list omits: SearchSkills, DesignSync, PublishPlugin,
+  ListSkills, ListPlugins) and never once succeeded is left out and listed under the table. A real built-in that
   fails every time (a WebSearch blocked by policy) stays. An MCP tool name that
   never succeeded while its server's other tools did (a misspelled name) is listed
   separately and not counted in the server's rate; a server whose every tool
   failed stays whole as a broken integration. A person whose exports predate the
-  tools file is named, not counted as error-free. Our
+  tools file is named, not counted as error-free. Exports from before schema 13
+  count refused calls as errors (the page can't tell them apart), so when a
+  selected person has one, a note under the table says their error rates read higher. Our
   suggestion, not Anthropic's: a tool that fails for everyone may be an
   integration or permission worth checking. Claude Code's own tools
   (task, schedule, plan-mode and worktree tools and the like) sit in a collapsed
@@ -354,7 +362,10 @@ People table.
   inflated by sessions that didn't. The share is that cost over what all the
   sessions that started in the selected weeks cost in all (a session counts whole,
   in the week it started: the export's `cost_with_line_data_usd` is whole sessions,
-  where a week's own cost counts requests by day), so it can't pass 100%. Blank
+  where a week's own cost counts requests by day), so it can't pass 100%. Lines are
+  counted per edit from schema 13 (on the day of the edit); exports before it took
+  Claude Code's own counter. When the selection mixes the two, a note under the
+  table names who is on the old measure, since the figures aren't like for like. Blank
   where nothing was recorded, never 0. A PR with no session cost in its export
   has no cost, not a free one, and "Opened from another folder" reads "?" when the
   export didn't say.
@@ -483,8 +494,10 @@ Replace the zeros with your real prices — a file still holding a zero is rejec
 so the unedited template can never produce a value figure. Each person is priced by their **usage
 tier** (`rate_limit_tier`, e.g. `default_claude_max_5x`) if it's listed, then
 their **seat tier** (`seat_tier`), then `default`; an Enterprise seat (a seat tier
-named `enterprise_*`) goes the other way, seat tier first, since the consumer rate-limit
-tier that comes with it isn't what the organisation pays. `per` is `month` or `year`.
+named `enterprise_*`) is priced by its seat tier, then `default`, and never by the
+consumer rate-limit tier that comes with it, which isn't what the organisation pays
+(an Enterprise seat with no price of its own and no `default` is blank, and the notice
+names its seat tier). `per` is `month` or `year`.
 Prices must be in **USD**, the currency usage is priced in: a file whose `currency` is
 anything else is rejected with a notice saying so (there is no conversion), and every
 seat cost on the page and in the report is in dollars.

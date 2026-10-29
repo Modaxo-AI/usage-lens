@@ -96,7 +96,9 @@ _WRAPPERS = re.compile(
     r"dotenv(?: --)?|cross-env"
     r"|uv run(?:\s+(?:--(?:with|with-requirements|python|project|directory|package|extra|"
     r"group|env-file|index|index-url)(?:=|\s+)\S+|-p\s+\S+|--[\w-]+))*"
-    r"|timeout(?:\s+(?:-[ks]\s*\S+|--[\w-]+(?:=\S+)?|-\w+))*\s+\d[\w.]*"
+    # (-k/-s take a value; any other short option must not also match
+    # that branch, or a long run of them backtracks without end.)
+    r"|timeout(?:\s+(?:-[ks]\s*\S+|--[\w-]+(?:=\S+)?|-(?![ks])\w+))*\s+\d[\w.]*"
     rf"|xvfb-run(?:\s+(?:-[sfenlp]\s+{_ARG}|--[\w-]+(?:={_ARG})?|-\w+))*"
     r")\s+"
 )
@@ -107,7 +109,12 @@ _ENV_ASSIGN = re.compile(
 # Shell keywords that open a command: "do pytest", "then make", "if pytest".
 _KEYWORD = re.compile(r"^(?:do|then|else|elif|if|while|until|!|\{)\s+")
 # A Python on its own, or named by a variable ("$PY", "${VENV}/bin/python").
-_PYBIN = r"(?:python[0-9.]*|py|\"?\$\{?\w+\}?[\w./-]*\"?)"
+# (A path after the variable starts with a separator, so the variable's own
+# name and the path never match the same characters: no backtracking.)
+_PYBIN = r"(?:python[0-9.]*|py|\"?\$\{?\w+\}?(?:[./-][\w./-]*)?\"?)"
+# Interpreter options before -m: `python3 -I -m unittest`, `python -X dev -m pytest`.
+_PYOPTS = r"(?:\s+-(?:[WX]\s*\S+|(?![WXmc]\b)(?![WX])[A-Za-z]+))*"
+_PYM = rf"{_PYBIN}{_PYOPTS}\s+-m\s+"
 # "./.venv/bin/pytest" is pytest, "./node_modules/.bin/jest" is jest.
 _LEADING_PATH = re.compile(r"^[^\s'\"=]*/(?=[^\s/])")
 # Options that come before the subcommand, dropped so the subcommand is next.
@@ -122,14 +129,19 @@ _JS_RUNNER = r"(?:npm|pnpm|yarn|bun)(?:\s+run(?:\s+--?[\w-]+)*)?"
 _JVM = r"(?:mvnw?|gradlew?)"
 # A dev server or watcher runs until stopped; it isn't a build.
 _NOT_WATCHING = r"(?!.*\s(?:--watch\b|-\w*w\b|serve\b))"
+# For a package script (`npm run build -- --watch`): -w there is npm's
+# --workspace, so only the long flag marks a watcher.
+_NOT_WATCH_FLAG = r"(?!.*\s--watch(?:All)?(?:\s|$|=(?!false|0|no\b)))"
 
 _PATTERNS = (
     ("test", re.compile(
         r"^(?:pytest|py\.test|tox|nox|jest|vitest|mocha|ava|karma|rspec|phpunit|ctest)\b"
-        rf"|^{_PYBIN}\s+-m\s+(?:pytest|unittest)\b"
+        rf"|^{_PYM}(?:pytest|unittest)\b"
         r"|^(?:python[0-9.]*\s+)?(?:\S*/)?manage\.py\s+test\b"
         r"|^node\b.*\s--test(?![\w-])"
         rf"|^{_JS_RUNNER}\s+test\b|^{_JS_RUNNER}\s+test:"
+        # npm and pnpm have short names for `test`.
+        r"|^(?:npm|pnpm)\s+(?:t|tst)(?![\w:.-])"
         # pnpm/yarn/bun run a package's own binary without `run`.
         r"|^(?:pnpm|yarn|bun)\s+(?:jest|vitest|mocha|ava|playwright\s+test|cypress\s+run)\b"
         r"|^(?:go|cargo|deno|dotnet|swift|mix|sbt|lein|bazel|flutter|dart)\s+test\b"
@@ -147,15 +159,15 @@ _PATTERNS = (
         r"|^ruff\b(?!\s+format\b)|^ruff\s+format\b.*\s--check\b"
         # Formatters rewrite files; only their check modes are a check.
         r"|^(?:black|isort)\b.*\s--(?:check|check-only|diff)\b"
-        rf"|^{_PYBIN}\s+-m\s+(?:mypy|ruff|flake8|pylint)\b"
-        rf"|^{_PYBIN}\s+-m\s+black\b.*\s--(?:check|diff)\b"
+        rf"|^{_PYM}(?:mypy|ruff|flake8|pylint)\b"
+        rf"|^{_PYM}black\b.*\s--(?:check|diff)\b"
         rf"|^{_JS_RUNNER}\s+(?:lint|typecheck|type-check|check|format:check)\b"
         r"|^cargo\s+(?:clippy|check)\b|^cargo\s+fmt\b.*\s--check\b"
         r"|^go\s+vet\b|^prettier\b.*--check|^next\s+lint\b|^deno\s+(?:lint|check)\b"
         r"|^make\s+lint\b"
     )),
     ("build", re.compile(
-        rf"^{_JS_RUNNER}\s+build\b"
+        rf"^{_JS_RUNNER}\s+build\b(?![:-]watch){_NOT_WATCH_FLAG}"
         r"|^(?:go|cargo|dotnet|swift|bazel|flutter)\s+build\b"
         rf"|^{_JVM}\b.*\b(?:package|compile|build|install|assemble|verify)\b"
         r"|^make(?:\s+(?:all|build))?\s*$|^make\s+(?:all|build)\b"
@@ -163,7 +175,7 @@ _PATTERNS = (
         rf"|^(?:tsup|esbuild|rollup|webpack)(?!\S){_NOT_WATCHING}"
         r"|^(?:xcodebuild|docker\s+build|docker\s+compose\s+build|docker\s+buildx\s+build)\b"
         r"|^cmake\s+--build\b|^ninja\b(?!\s+-t\b)|^(?:turbo|nx)\s+(?:run\s+)?build\b"
-        rf"|^(?:poetry|uv|pdm|hatch)\s+build\b|^{_PYBIN}\s+-m\s+build\b"
+        rf"|^(?:poetry|uv|pdm|hatch)\s+build\b|^{_PYM}build\b"
     )),
     ("commit", re.compile(r"^git\s+commit\b")),
     ("pr", re.compile(r"^gh\s+pr\s+create\b")),
@@ -305,6 +317,9 @@ _SCRATCH = re.compile(
     r"/appdata/local/temp/|^[a-z]:/(?:temp|tmp)/")
 
 
+_WORKTREE = re.compile(r"/\.claude/worktrees/[^/]+/")
+
+
 def _inside(path: str, folder) -> bool:
     if not isinstance(folder, str) or not folder:
         return False
@@ -324,7 +339,10 @@ def is_note_edit(path, cwds=()) -> bool:
     if not isinstance(path, str) or not path:
         return False
     p = path.replace("\\", "/").lower()
-    if p.endswith(_NOTE_SUFFIXES) or "/.claude/" in p or p.startswith(".claude/"):
+    # A Claude Code worktree (`<repo>/.claude/worktrees/<name>/...`) is a checkout
+    # of the project: its files are code, whatever the folder above is called.
+    own = _WORKTREE.sub("/", p, count=1)
+    if p.endswith(_NOTE_SUFFIXES) or "/.claude/" in own or own.startswith(".claude/"):
         return True
     absolute = p.startswith("/") or re.match(r"^[a-z]:/", p) is not None
     if not absolute:
@@ -542,6 +560,10 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
             # Only code edits need checking: a memory file or doc written after
             # the last test run doesn't make the session "unchecked".
             if name in EDIT_TOOLS and tuid not in notes:
+                # An edit that was refused or failed changed nothing, so it
+                # leaves nothing to check and doesn't move the last-edit time.
+                if tuid in refused or errors.get(tuid):
+                    continue
                 per[sid]["edits"] += 1
                 if ts and ts > last_edit.get(sid, ""):
                     last_edit[sid] = ts

@@ -101,7 +101,11 @@ export zips/CSVs (one or more per person, from collect.py --export / Export (.zi
    made. A call the user refused (the result carries `toolDenialKind`) is a call
    but not an error. **Lines changed** are counted per edit, from the diff in
    each Edit/Write result, dated by the edit and credited to the session (a
-   subagent's edits to its parent); a session with no edit has none. A skill
+   subagent's edits to its parent); a session with no edit has none. A
+   subagent's edit result carries no diff, so its lines are counted from the
+   call's own input (an Edit's old and new text compared line by line, a
+   Write's content, a NotebookEdit's new source) -- in memory, keeping only the
+   two numbers, and only for a call whose result succeeded. A skill
    counts when the Skill tool was called, and also when a slash command started
    it (`/next-task`), if the name is a skill the logs show elsewhere. A **PR** is
    attributed and dated by its earliest `pr-link`; each session lists every PR

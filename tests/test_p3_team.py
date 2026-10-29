@@ -126,17 +126,19 @@ class TestSeatPrices(P3Case):
         # Anything that is not an Enterprise seat keeps the rate-limit tier first.
         self.assertEqual(team._seat_price({"rate_limit_tier": "default_claude_max_5x", "seat_tier": "team"}, prices), 100)
 
-    def test_sp11_an_enterprise_seat_with_no_enterprise_price_falls_back(self):
-        prices = {"per": "month", "prices": {"default_claude_max_5x": 100}}
+    def test_sp11_an_enterprise_seat_with_no_enterprise_price_falls_back_to_default_only(self):
+        # (T9) The consumer rate-limit tier's price is not what an enterprise seat costs.
         person = {"rate_limit_tier": "default_claude_max_5x", "seat_tier": "enterprise_tier_1"}
-        self.assertEqual(team._seat_price(person, prices), 100)
+        self.assertEqual(team._seat_price(person, {"per": "month", "prices": {"default_claude_max_5x": 100, "default": 70}}), 70)
+        self.assertIsNone(team._seat_price(person, {"per": "month", "prices": {"default_claude_max_5x": 100}}))
 
     def test_sp13_the_unpriced_note_names_the_tiers_that_need_a_price(self):
         self.folder.export("a", "20260921", [week_row("2026-09-14", "r", 5)], seat_tier="enterprise_tier_2",
                            rate_limit_tier="default_claude_max_20x")
         prices = {"currency": "USD", "per": "month", "prices": {"other": 10.0}, "source": "seat-prices.json"}
         (msg,) = [m for m in self.folder.messages(prices=prices) if "no price" in m]
-        self.assertIn("default_claude_max_20x", msg)
+        # An enterprise seat is priced by its seat tier alone, so that is the price to add.
+        self.assertNotIn("default_claude_max_20x", msg)
         self.assertIn("enterprise_tier_2", msg)
         self.assertIn("A (a@example.com)", msg)
 

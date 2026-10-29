@@ -47,6 +47,16 @@ can't settle them, documented. Every fix has a test.
 - Filters are kept in the address; the quick ranges say what they cover; charts
   follow the system's light/dark theme.
 
+**Found by a second, independent re-check, and fixed**
+- Subagent edits, whose results carry no diff, are counted from the edit's own
+  old and new text, in memory (only the two numbers are kept). A Write over an
+  existing file counts the whole new file as added, so rewrites read high.
+- Slash-command skill invocations are found in Claude Code's real record shape.
+- Edits inside Claude Code worktrees count as code edits.
+- The export's lines follow the week of each edit, matching the dashboard.
+- Two command patterns that could take exponential time on adversarial input
+  are linear now.
+
 **Team dashboard and merge**
 - Spend per active day is a range for people with two machines, and the finding
   only fires when it's over $30 at the most days.
@@ -56,7 +66,7 @@ can't settle them, documented. Every fix has a test.
 - Failing integrations are one finding; friction lists who hit the errors.
 - Output per person compares like with like (sessions started in the weeks).
 
-## 1.0.2 — 2026-10-29
+## 1.0.2 — 2026-10-29 (not released separately; included in 1.1.0)
 
 Every figure on the Overview tab was recomputed from raw logs by independent
 code, and every claim checked against Anthropic's sources. This release fixes

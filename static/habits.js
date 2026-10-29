@@ -38,8 +38,9 @@ const MODE_LABELS = {
 };
 const EXPIRED_MISS = 'previous_message_not_found';
 
-// Claude Code's built-in tools, by name (code.claude.com/docs/en/tools-reference,
-// checked 2026-10-29), plus the older names it has renamed.
+// Claude Code's own tools, by name (code.claude.com/docs/en/tools-reference,
+// checked 2026-10-29), plus the older names it has renamed and a few real ones
+// that appear in logs without being documented.
 const BUILTIN_TOOLS = new Set([
   'Agent', 'Artifact', 'AskUserQuestion', 'Bash', 'CronCreate', 'CronDelete', 'CronList', 'Edit',
   'EndConversation', 'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree', 'Glob', 'Grep',
@@ -48,13 +49,14 @@ const BUILTIN_TOOLS = new Set([
   'SendMessage', 'SendUserFile', 'ShareOnboardingGuide', 'Skill', 'SubagentHandback', 'TaskCreate',
   'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate', 'TodoWrite', 'ToolSearch',
   'WaitForMcpServers', 'WebFetch', 'WebSearch', 'Workflow', 'Write',
+  // real in Claude Code's logs but not on the documented list
+  'SearchSkills', 'DesignSync', 'PublishPlugin', 'ListSkills', 'ListPlugins',
   // renamed or retired
   'Task', 'MultiEdit', 'LS', 'NotebookRead', 'TodoRead', 'KillShell', 'BashOutput', 'exit_plan_mode',
 ]);
 function isMcpTool(name) { return String(name).startsWith('mcp__'); }
-function mcpServerRaw(name) { return String(name).split('__')[1] || '(mcp)'; }
 
-// A tool name that isn't a Claude Code built-in and never succeeded: made up by
+// A tool name that isn't in Claude Code's documented tool list and never succeeded: made up by
 // the model (a lowercase `bash`), or not available in that session. Nothing there
 // can be fixed. Decided by name, so a real tool that fails every time (WebSearch
 // when it isn't permitted) stays in the ranking, and so does any MCP tool.
@@ -64,13 +66,28 @@ function inventedTool(name, t) {
 }
 // An MCP tool name that never succeeded while another tool on the same server
 // did: a misspelt or retired tool name, not a failing server. Listed apart and
-// kept out of the server's error rate. byTool: {name: {calls, errors}}.
-function strayMcpTools(byTool) {
+// kept out of the server's error rate. Decided from every call ever recorded
+// (all dates, projects and models), then applied to whatever is in the range:
+// otherwise a real tool whose only call in a short range failed would be
+// dropped as a stray. Servers are compared by their tidied label
+// (mcpServerOf, app.js), so one service added three ways counts as one server.
+let _strayCache = null;
+function strayMcpTools() {
+  const rows = (PAYLOAD && PAYLOAD.tools) || [];
+  if (_strayCache && _strayCache.rows === rows && _strayCache.n === rows.length) return _strayCache.set;
+  const byTool = {};
+  rows.forEach(r => {
+    if (!isMcpTool(r[2])) return;
+    const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
+    t.calls += r[3]; t.errors += r[4];
+  });
   const worked = new Set();
-  Object.entries(byTool).forEach(([n, t]) => { if (isMcpTool(n) && t.calls > t.errors) worked.add(mcpServerRaw(n)); });
-  return new Set(Object.entries(byTool)
-    .filter(([n, t]) => isMcpTool(n) && t.calls > 0 && t.errors >= t.calls && worked.has(mcpServerRaw(n)))
+  Object.entries(byTool).forEach(([n, t]) => { if (t.calls > t.errors) worked.add(mcpServerOf(n)); });
+  const set = new Set(Object.entries(byTool)
+    .filter(([n, t]) => t.calls > 0 && t.errors >= t.calls && worked.has(mcpServerOf(n)))
     .map(([n]) => n));
+  _strayCache = { rows, n: rows.length, set };
+  return set;
 }
 
 function habitsAvailable() { return !!(PAYLOAD && PAYLOAD.health); }
@@ -179,13 +196,13 @@ function habitMeasures(w) {
     const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
     t.calls += r[3]; t.errors += r[4];
   });
-  // The tool behind the most errors. A name that isn't a built-in and never once
+  // The tool behind the most errors. A name that isn't a documented tool and never once
   // succeeded is one the model made up (a lowercase `bash`), not a tool to fix,
   // and an MCP tool name that never worked on a server whose other tools did is
   // a stray name rather than a failing integration: neither is a candidate. A
   // whole MCP server that never works is, and is. The rank is by errors, not by
   // rate, so a rarely-called tool can't outrank the one behind most failures.
-  const stray = strayMcpTools(byTool);
+  const stray = strayMcpTools();
   const worstTool = Object.entries(byTool)
     .filter(([name, t]) => t.calls >= 10 && t.errors > 0 && !inventedTool(name, t) && !stray.has(name))
     .map(([name, t]) => ({ name, errors: t.errors, rate: t.errors / t.calls, calls: t.calls,
@@ -345,9 +362,9 @@ function habitCards(r, b) {
     fix: "Our suggestion, not Anthropic's: a tool that fails often may be an integration or permission worth checking.",
     link: null,
     tip: 'Tool calls that returned an error, runs of consecutive failures, and the tool behind the most ' +
-         'errors (at least 10 calls). A tool name that is not a Claude Code built-in and never succeeded ' +
+         'errors (at least 10 calls). A tool name that is not in Claude Code\'s documented tool list and never succeeded ' +
          '(made up by the model, or not available) is left out, and so is an MCP tool name that never ' +
-         'worked while the server\'s other tools did; a built-in that fails every time, or an MCP server ' +
+         'worked while the server\'s other tools did; a documented tool that fails every time, or an MCP server ' +
          'that never works, counts. Refused calls (you or a rule said no) are not errors.',
   });
   cards.push({
