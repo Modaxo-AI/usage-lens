@@ -120,8 +120,13 @@ class TestEnvTab(unittest.TestCase):
         self.assertIn("+280", html)
 
     def test_tile_says_when_line_counts_start(self):
-        html = run_js(DASHBOARD, _env(LINES, frm="2026-02-01") + "out(el('envStatTiles').innerHTML)")
-        self.assertIn("recorded from Mar 2, 2026", html)
+        # The date is written in the reader's own locale ("Mar 2, 2026" in the
+        # US, "2 Mar 2026" in the UK), so the expected text is formatted the
+        # same way rather than spelled out.
+        html, first = run_js(DASHBOARD, _env(LINES, frm="2026-02-01")
+                             + "out([el('envStatTiles').innerHTML, prettyDate('2026-03-02')])")
+        self.assertIn("2026", first)
+        self.assertIn(f"recorded from {first}", html)
 
     def test_pull_requests_newest_first(self):
         prs = [{"session_id": "long", "date": d, "repo": "o/r", "number": n, "url": f"https://x/{n}"}
