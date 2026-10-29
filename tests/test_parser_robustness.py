@@ -34,6 +34,15 @@ class TestOddRecordsAreSkipped(_TmpFile):
         self.assertEqual([r["response_id"] for r in facts.requests], ["msg-1"])
         return facts
 
+    def test_a_byte_order_mark_does_not_cost_the_first_record(self):
+        # A file saved by an editor on Windows can start with one.
+        path = self.write(_GOOD)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        with open(path, "wb") as fh:
+            fh.write(b"\xef\xbb\xbf" + data)
+        self.assertEqual([r["response_id"] for r in parse_file(path, "main").requests], ["msg-1"])
+
     def test_a_json_array_line(self):
         self.assert_survives("[1, 2]")
 

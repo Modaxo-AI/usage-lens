@@ -4,11 +4,13 @@ description: Export this machine's Claude Code usage as the Usage Lens business-
 argument-hint: "[output folder] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--tz ZONE]"
 ---
 
-Write the export to a folder the user chooses. If `$ARGUMENTS` doesn't name
-one, ask where to save it rather than writing into the current project.
+The user's arguments: `$ARGUMENTS`. Write the export to a folder the user
+chooses; if they didn't name one, ask where to save it rather than writing into
+the current project. Put the folder in double quotes, since paths often contain
+spaces, and add any of the options below that the user asked for:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/collect.py" --export $ARGUMENTS
+python3 "${CLAUDE_PLUGIN_ROOT}/collect.py" --export "<folder>"
 ```
 
 On Windows, use `py` in place of `python3`.

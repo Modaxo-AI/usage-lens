@@ -12,13 +12,22 @@
 
   | | Imputed vs logged output |
   |---|---|
-  | Opus 5, Opus 5.5, Sonnet 5 subagents, in aggregate | within ±4% |
+  | Opus 5, Opus 5.5, Sonnet 5 subagents, in aggregate | within ±4–5% |
+  | Sonnet 5.5 subagents, in aggregate | about 8% low |
   | Main-thread responses, never fitted on | +1% to +14% |
   | One response | typically 8–22% off |
   | Haiku 4.5 | about 39% high (a small share of output, at Haiku rates) |
 
   Totals are reliable; a single response's output is not. Imputed tokens are
   counted in output and cost, and shown as their own figure everywhere.
+
+- **A response that fell back to another model is priced at the fallback's
+  usage only.** When a model declines a request and Claude Code retries it on
+  another, the response's `usage.iterations` holds both attempts, but its
+  top-level usage, which the tool prices, is only the fallback's. Whether the
+  first, declined attempt is billed isn't documented, so it isn't counted. Such
+  responses are rare (a handful in a heavy user's logs), but the first attempt
+  can carry a large cache read.
 
 - **Transcripts don't record every model call. Where Claude Code kept its own
   counter, the rest is shown separately; elsewhere the total is a floor.**

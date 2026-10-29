@@ -254,14 +254,17 @@ def rates_for(model: str, speed: str | None = None, ts: str | None = None,
 
 
 def cost_for(model: str, usage: dict, unknown_models: set | None = None,
-             ts: str | None = None) -> float:
+             ts: str | None = None, summed: bool = False) -> float:
     """Cost in USD for one usage record, at the rates in force on `ts` (see
     rates_for). Records unknown model names into `unknown_models` (if given)
     and returns 0.0 for them rather than raising.
 
     Honours `usage["speed"] == "fast"` (premium fast-mode pricing) and
-    `usage["service_tier"] == "batch"` (Batch API, billed at 50%)."""
-    rates = rates_for(model, usage.get("speed"), ts, prompt_tokens(usage))
+    `usage["service_tier"] == "batch"` (Batch API, billed at 50%).
+
+    `summed`: the usage adds up many requests, so its prompt length says
+    nothing about any one of them, and a prompt-length tier isn't applied."""
+    rates = rates_for(model, usage.get("speed"), ts, None if summed else prompt_tokens(usage))
     if not rates:
         if unknown_models is not None and isinstance(model, str):
             unknown_models.add(model)

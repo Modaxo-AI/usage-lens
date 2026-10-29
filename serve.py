@@ -137,6 +137,9 @@ def _same_site_request(headers, port: int) -> bool:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "UsageDashboard/2.0"
+    # Seconds a connection may sit without sending: a request that never
+    # finishes can't hold a thread forever.
+    timeout = 30
     port = 8765  # overridden by main() before the server starts
     # Set by --team: the folders/files holding people's exports. In team mode
     # the server reads those instead of this machine's own logs.
@@ -333,8 +336,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="version", version=f"Usage Lens {context_mod.tool_version()}")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
+    parser.add_argument("--no-open", action="store_true", help="don't open the dashboard in a browser")
     parser.add_argument("--offline", action="store_true",
                         help="make no network request at all (skips the daily price check)")
     parser.add_argument("--team", nargs="+", metavar="PATH",
@@ -351,6 +354,7 @@ def main():
     global _cache
     if args.data_dir:
         paths.set_data_dir(args.data_dir)
+    context_mod.adopt_legacy_machine_id()
     _cache = default_cache()
 
     if not args.team:
@@ -375,9 +379,11 @@ def main():
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     if args.team:
-        print(f"Serving TEAM dashboard for {', '.join(Handler.team_paths)} at {url}")
+        # flush: run in the background (as the plugin's skills do), stdout is
+        # a pipe and would hold this line until the server stops.
+        print(f"Serving TEAM dashboard for {', '.join(Handler.team_paths)} at {url}", flush=True)
     else:
-        print(f"Serving usage dashboard at {url}")
+        print(f"Serving usage dashboard at {url}", flush=True)
     if not args.no_open:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:

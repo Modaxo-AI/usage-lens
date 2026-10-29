@@ -35,6 +35,9 @@ class TestNormalizeRemote(unittest.TestCase):
         self.assertNotIn("someone", key)
 
     def test_azure_devops_path_is_kept_whole(self):
+        self.assertEqual(context.normalize_remote("https://github.com/org/repo.git?access_token=SECRET"),
+                         "github.com/org/repo")
+        self.assertEqual(context.normalize_remote("https://github.com/org/repo#readme"), "github.com/org/repo")
         key = context.normalize_remote("https://contoso@dev.azure.com/contoso/Platform/_git/Billing")
         self.assertEqual(key, "dev.azure.com/contoso/platform/_git/billing")
 

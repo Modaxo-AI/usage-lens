@@ -466,8 +466,9 @@ function wireExport() {
       'your dashboard shows local days.'
     : '';
   btn.title =
-    'Downloads one zip holding both business-review CSVs: a person x project x ' +
-    'week summary and a per-session sheet.\n\nCovers the selected date range. ' +
+    'Downloads one zip holding the six business-review CSVs: a person x project x ' +
+    'week summary, a per-session sheet, and the breakdown, limits, PRs and tools ' +
+    'files.\n\nCovers the selected date range. ' +
     'Identifies you by email and includes session titles, project paths, branch ' +
     'names and PR links.\nContains no prompts, no replies and no code.' +
     (zoneSentence ? '\n\n' + zoneSentence : '');
@@ -519,8 +520,12 @@ function renderNotices() {
   // "differs" also covers a published-but-unpriced model in the logs, which has
   // no rate differences to list; the banner below reports that case.
   if (['differs', 'failed'].includes(check.status) && (check.differences || []).length) {
+    // A rate, or (unit "tokens") a long-prompt threshold; null is "none".
+    const amount = (d, v) => v == null ? 'none'
+      : d.unit === 'tokens' ? `over ${Number(v).toLocaleString()} tokens` : `$${v}`;
     const rows = check.differences.map(d =>
-      `${esc(d.model)} ${esc(d.field.replace(/_/g, ' '))}: $${esc(d.ours)} here, $${esc(d.published)} published` +
+      `${esc(d.model)} ${esc(d.field.replace(/_/g, ' '))}: ${esc(amount(d, d.ours))} here, ` +
+      `${esc(amount(d, d.published))} published` +
       (d.used ? '' : ' (not in your logs)')).join('; ');
     notes.push(['warn',
       `Anthropic's <a href="${safeUrl(check.url)}" target="_blank" rel="noopener">published prices</a> differ from this ` +

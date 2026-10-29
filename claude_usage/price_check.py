@@ -188,6 +188,15 @@ def parse(markdown: str):
 # comparing
 # --------------------------------------------------------------------------- #
 
+def _amount(difference, value):
+    """One side of a difference as text: a rate, or a token threshold."""
+    if value is None:
+        return "none"
+    if difference.get("unit") == "tokens":
+        return f"over {value:,} tokens"
+    return f"${value:g}/MTok"
+
+
 def compare(published, ours=None, used_models=(), ours_long=None):
     """Differences between the published rates and the rates in force today.
 
@@ -228,9 +237,17 @@ def compare(published, ours=None, used_models=(), ours_long=None):
         if threshold != tier["over"]:
             differences.append({"model": model, "field": "long-prompt threshold",
                                 "ours": threshold, "published": tier["over"],
-                                "used": model in used})
+                                "unit": "tokens", "used": model in used})
         diff(model, ours[model], tier["up_to"])
         diff(model, long_rates, tier["long"], f"{{}} (prompts over {tier['over']:,} tokens)")
+    # A model we charge more for long prompts that the page now lists at one
+    # flat price: its base rates can match while every long prompt is overpriced.
+    if "tiers" in published:
+        for model in sorted(ours_long):
+            if model in published["rates"] and model not in tiers and model in ours:
+                differences.append({"model": model, "field": "long-prompt tier",
+                                    "ours": ours_long[model][0], "published": None,
+                                    "unit": "tokens", "used": model in used})
     missing = [{"model": m, "used": m in used}
                for m in sorted(published["rates"]) if m not in ours]
     tiered = [{"model": m, "used": m in used} for m in published["tiered"]
@@ -449,8 +466,8 @@ def describe(result) -> list:
         lines.append("WARNING: Anthropic's published prices differ from this tool's table "
                      "(costs here still use the table):")
         for d in result["differences"]:
-            lines.append(f"  {d['model']} {d['field']}: table ${d['ours']:g}/MTok, "
-                         f"published ${d['published']:g}/MTok"
+            lines.append(f"  {d['model']} {d['field']}: table {_amount(d, d['ours'])}, "
+                         f"published {_amount(d, d['published'])}"
                          + ("" if d["used"] else "  (not in your logs)"))
         lines.append("  Pull the latest version of this tool; if it still differs, the table needs "
                      "a dated row (see docs/cost.md).")

@@ -8,12 +8,14 @@ The team dashboard reads the exports people send, from one folder: zips from
 the **Export (.zip)** button on their own dashboard, or the CSVs
 `/usage-lens:export` writes.
 
-If `$ARGUMENTS` doesn't name a folder, ask the user which folder holds the
-exports. Then start the server with the Bash tool's `run_in_background` option,
-because it runs until stopped:
+The user's arguments: `$ARGUMENTS`. If they don't name a folder, ask the user
+which folder holds the exports. Then start the server with the Bash tool's
+`run_in_background` option, because it runs until stopped. Put the folder in
+double quotes, since paths often contain spaces, and add `--seat-prices "<file>"`
+if the user gave one:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/serve.py" --team $ARGUMENTS
+python3 "${CLAUDE_PLUGIN_ROOT}/serve.py" --team "<folder>"
 ```
 
 On Windows, use `py` in place of `python3`.
@@ -25,4 +27,4 @@ opens the page. Give the user the URL. If the port is taken, add `--port 8766`.
 - For value per seat, put a `seat-prices.json` in the folder or pass
   `--seat-prices FILE`; the format is in `${CLAUDE_PLUGIN_ROOT}/docs/team.md`.
 - For the merged, de-duplicated CSVs instead of a dashboard, run
-  `python3 "${CLAUDE_PLUGIN_ROOT}/collect.py" --merge <folder> --out <output folder>`.
+  `python3 "${CLAUDE_PLUGIN_ROOT}/collect.py" --merge "<folder>" --out "<output folder>"`.

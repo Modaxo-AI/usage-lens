@@ -125,16 +125,18 @@ writes). See [Team view](docs/team.md).
 
 ## Privacy in one paragraph
 
-The parser reads usage numbers, model names, timestamps, tool and skill *names*,
-session titles, PR links and environment metadata. It never reads your prompts,
-Claude's replies, tool outputs or any code — enforced by a test that plants a
-sentinel string through a fixture transcript and asserts it reaches neither the
-dashboard nor any CSV. A few narrow exceptions are decided in memory, keeping
-only the result: the limit type and reset time from Claude Code's own
-usage-limit notice; whether a message starts with its interrupt marker or its
-markup for a slash command; the category of a shell command Claude ran (test,
-lint, build, commit, PR); and whether an edited file is a note or doc rather
-than code. See [Privacy](docs/privacy.md). The server binds
+The parser keeps usage numbers, model names, timestamps, tool and skill *names*,
+session titles, project folder paths, subagents' short descriptions, PR links
+and environment metadata. It never keeps your prompts, Claude's replies, tool
+inputs or outputs, or any code — enforced by a test that plants a distinct
+sentinel string in every kind of transcript record and asserts none reaches
+the dashboard, the cache or any CSV. A few narrow exceptions are decided in
+memory, keeping only the result: the limit type and reset time from Claude
+Code's own usage-limit notice; whether a message starts with its interrupt
+marker or its markup for a slash command; the category of a shell command
+Claude ran (test, lint, build, commit, PR); whether an edited file is a note or
+doc rather than code; and the length of each reply, to estimate output the
+logs leave out. See [Privacy](docs/privacy.md). The server binds
 to `127.0.0.1` only. The one network request the tool makes is a daily check of
 Anthropic's public pricing page, which sends nothing about you (`--offline`
 turns it off).

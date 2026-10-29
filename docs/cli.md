@@ -15,11 +15,19 @@ not beside the code:
 | `machine-id` | This machine's random id, for the [team merge](team.md#what-combining-handles-for-you) |
 | `data.json`, `dashboard.html` | What `collect.py` and `collect.py --static` write |
 
-Because the folder is outside the code, updating the tool, re-cloning it or
-installing it as a plugin keeps the same machine id and a warm cache. A copy
-older than the data folder kept its files in `.cache/` beside the code; the
-first run carries its machine id over, and the parse cache rebuilds itself in a
-few seconds. The old `.cache/` folder can then be deleted.
+Because the folder is outside the code, from 1.0.0 on updating the tool,
+re-cloning it or installing it as a plugin keeps the same machine id and a warm
+cache.
+
+A copy older than 1.0.0 kept its files in `.cache/` beside the code. The first
+run of 1.0.1 or later *from that same copy* (update it in place with
+`git pull`) moves its machine id into the data folder and renames the old file
+to `machine-id.moved`; the parse cache rebuilds itself in a few seconds. The old
+`.cache/` folder can then be deleted. A fresh clone or a plugin install can't
+see an old copy's `.cache/`, so run the new version once from the old copy
+first, or copy `.cache/machine-id` into `~/.usage-lens/` yourself. Otherwise
+your next export carries a new id, and the team merge treats it as a new
+machine where it can't match sessions.
 
 To keep the folder somewhere else, set `CLAUDE_USAGE_DATA_DIR`, or pass
 `--data-dir DIR` to either command. Exports (`--export DIR`) and merges
@@ -35,6 +43,7 @@ python3 serve.py --offline       # no network request at all (skips the daily pr
 python3 serve.py --team DIR      # team dashboard over people's export zips
 python3 serve.py --team DIR --seat-prices prices.json   # ...with value per seat
 python3 serve.py --data-dir DIR  # keep the cache and machine id in DIR
+python3 serve.py --version       # print the version and exit
 ```
 
 `--team` takes one or more files or folders of export zips/CSVs and serves the
@@ -102,7 +111,7 @@ python3 collect.py --export DIR  # writes the business-review CSVs
 | Flag | What it does |
 |---|---|
 | `--static` | Build `dashboard.html` (see below) |
-| `--redact` | Strip identifying detail from the `--static` build |
+| `--redact` (or `--redact-titles`) | Strip identifying detail from the `--static` build |
 | `--force` | Ignore the parse cache and re-read every log file |
 | `--export [DIR]` | Write the six CSVs described in [Export for business review](export.md) |
 | `--tz ZONE` | With `--export`: the zone the export's days and weeks are in, as an IANA name (default: the `CLAUDE_USAGE_EXPORT_TZ` variable, else `UTC`). The dashboard, `data.json` and `--static` always use this machine's zone. See [the export zone](export.md#the-export-zone) |
@@ -111,6 +120,7 @@ python3 collect.py --export DIR  # writes the business-review CSVs
 | `--no-titles` | Leave session titles out of the export |
 | `--check-prices` | Check the rate table against Anthropic's published prices now (ignoring today's cached check); exit 1 if anything differs, the check couldn't run, the page was only partly understood, or a model in your logs isn't listed on the page (`unverified`). See [Cost estimates](cost.md#the-daily-price-check) |
 | `--offline` | Make no network request at all (skips the daily price check) |
+| `--version` | Print the version (`1.0.1`, plus the commit in a git checkout) and exit |
 | `--data-dir DIR` | Where the tool keeps its files (default `~/.usage-lens`, or `CLAUDE_USAGE_DATA_DIR`). See [Where the tool keeps its files](#where-the-tool-keeps-its-files) |
 | `--merge PATH...` | Team mode: combine people's export zips/CSVs (files or folders) into de-duplicated team CSVs and a report, instead of reading your own logs. See [Team view](team.md) |
 | `--out DIR` | Where `--merge` writes (default `./team-merged`) |
