@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Usage Lens — Team</title>
 <link rel="stylesheet" href="static/app.css">
+<style>
+  /* The ninth categorical colour (app.css has eight): a brown, apart from the other eight. */
+  :root { --series-9: #8a5a44; }
+  @media (prefers-color-scheme: dark) { :root { --series-9: #c9a08a; } }
+  /* A week none of the person's exports touches: unknown, not "no activity". */
+  .hm-cell.uncovered { background-image: repeating-linear-gradient(45deg, transparent 0 5px, color-mix(in srgb, var(--text-muted) 40%, transparent) 5px 6px); }
+  .hm-key.uncovered { background-image: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--text-muted) 55%, transparent) 3px 4px); }
+</style>
 <script src="static/chart.umd.min.js"></script>
 </head>
 <body>
@@ -76,13 +84,18 @@
     <div class="card">
       <div class="card-head"><h2>What stands out</h2></div>
       <div id="findingsList"></div>
-      <p class="foot-note">Fixed rules over the selected people and weeks, each linking to its detail. Spend is list price.</p>
+      <p class="foot-note">Fixed rules over the selected people and weeks, each linking to its detail. Spend is list price.
+        Only the $30 per-day line is Anthropic&rsquo;s (its 90th percentile across enterprise deployments); the others are this
+        tool&rsquo;s own thresholds: 40% of spend in one repository (of two or more), an MCP integration with 20 or more calls and
+        10% or more errors, 10% or more of main-conversation spend over 500k tokens, and a machine&rsquo;s latest export more than 7 days old.</p>
     </div>
   <div class="stats" id="teamTiles"></div>
     <div class="card">
       <div class="card-head"><h2>Team spend by week</h2></div>
       <div class="chart-box"><canvas id="trendChart"></canvas></div>
-      <p class="foot-note">Bars: list-price cost by person. Line: people with any usage that week.</p>
+      <p class="foot-note">Bars: list-price cost by person (the 8 biggest are named, the rest are Other). A week outside a person&rsquo;s
+        exports is left blank: it is unknown, not $0. A week marked (part) isn&rsquo;t over in the exports, so it is incomplete.
+        Line: people with any usage that week.</p>
     </div>
     <div class="card">
       <div class="card-head">
@@ -95,7 +108,8 @@
       <div class="chart-box"><canvas id="modelTrendChart"></canvas></div>
       <p class="foot-note">Everyone selected, added together, by the exact model each request ran on (a dated snapshot or
         1M-context variant counts as its model). The 8 biggest over these weeks are named; the rest are Other. Cost is list
-        price; output tokens are what use up the allowance, and cheaper models can produce many of them.</p>
+        price. Output tokens are only what the model wrote: every request in a conversation, its whole context included, draws on
+        usage, so they don&rsquo;t measure the allowance, and cheaper models can produce many of them.</p>
     </div>
     <div class="card">
       <div class="card-head"><h2>How current the data is</h2></div>
@@ -140,8 +154,13 @@
         </table>
       </div>
       <p class="foot-note">Anthropic reports about $13 per developer per active day on average, and under $30 for 90% of users
-        (<a href="https://code.claude.com/docs/en/costs" target="_blank" rel="noopener">Manage costs</a>). List price, not your invoice.
-        Active days are the exact distinct days where the export carries them (schema 11); for older exports they are estimated from the export&rsquo;s own total and each week&rsquo;s project days (or, failing that, added and capped at the week&rsquo;s days in the export window, which can overstate the days and so understate spend per day).</p>
+        across enterprise deployments (<a href="https://code.claude.com/docs/en/costs" target="_blank" rel="noopener">Manage costs</a>).
+        List price, not your invoice. Active days are the exact distinct days where the export carries them (schema 11) and the
+        person used one machine. Exports carry day counts, not the days, so for two machines the days range from the busier
+        machine&rsquo;s to both added together (at most 7 a week); for older exports they are estimated from the export&rsquo;s own total
+        and each week&rsquo;s project days (or, failing that, added and capped at the week&rsquo;s days in the export window).
+        Where the days aren&rsquo;t exact the table shows &ldquo;≈&rdquo;, the days they can be between, and the per-day range they
+        give; a person is marked above the 90th percentile only if even the most days possible leave them over it.</p>
     </div>
   </div>
 
@@ -157,16 +176,19 @@
     </div>
     <div class="table-scroll"><table class="heatmap" id="heatmap"></table></div>
     <p class="foot-note">Darker is more use. A blank cell is a week with no Claude Code activity.
-      <span class="hm-key partial"></span> part-week at the edge of that person's export window ·
+      <span class="hm-key uncovered"></span> a week none of that person&rsquo;s exports covers: unknown, not idle ·
+      <span class="hm-key partial"></span> part-week at the edge of that person's export window (a week a second machine covers whole isn&rsquo;t marked) ·
       <span class="hm-key cli-gap"></span> CLI history already deleted for that week, so only Desktop work shows.
-      Active days are the exact distinct days where the export carries them (schema 11); for older exports they are estimated from the export&rsquo;s own total and each week&rsquo;s project days; hover a cell marked &ldquo;≈&rdquo;.</p>
+      Active days are the exact distinct days where the export carries them (schema 11) and the person used one machine; otherwise they are
+      estimated (from the export&rsquo;s own total and each week&rsquo;s project days, or machines&rsquo; days that may overlap), and
+      a cell in the Active days view and its tooltip are marked &ldquo;≈&rdquo;.</p>
   </div>
 
   <div class="card">
     <div class="card-head"><h2>Usage limits by person</h2></div>
     <div class="table-scroll">
       <table class="data-table" id="limitsTable">
-        <thead><tr><th>Person</th><th>Seat</th><th class="num">Limit hits</th><th class="num">Lock-outs</th>
+        <thead><tr><th>Person</th><th title="Their usage tier (rate-limit tier), else their seat tier">Usage tier</th><th class="num">Limit hits</th><th class="num">Lock-outs</th>
           <th class="num">Locked out</th><th class="num">Extra usage (est.)</th><th class="num">This week</th>
           <th>Status</th><th>Projected hit</th></tr></thead>
         <tbody></tbody>
@@ -195,7 +217,8 @@
       </div>
       <p class="foot-note">List-price usage in the selected weeks ÷ (seat cost + their extra usage in those weeks). Seat cost
         counts only the days of the selected weeks that fall inside each person’s exports’ windows (not the gaps between them). Above 1×, the seat delivered
-        more API-equivalent usage than it cost. Seat prices come from <code>seat-prices.json</code> (docs/team.md).</p>
+        more API-equivalent usage than it cost. Seat prices come from <code>seat-prices.json</code> (docs/team.md), in USD,
+        the currency usage is priced in. A person whose CLI history was deleted for all the selected weeks has no multiple.</p>
     </div>
   </div>
 
@@ -216,24 +239,38 @@
     <div class="table-scroll">
       <table class="data-table" id="frictionTable">
         <thead><tr><th>Integration or tool</th><th class="num">Calls</th><th class="num">Errors</th>
-          <th class="num">Error rate</th><th>People</th></tr></thead>
+          <th class="num">Error rate</th><th>People (errors)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
+    <details class="cc-tools" id="frictionMoreWrap" hidden><summary>Show more tools</summary>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Integration or tool</th><th class="num">Calls</th><th class="num">Errors</th>
+            <th class="num">Error rate</th><th>People (errors)</th></tr></thead>
+          <tbody id="frictionMoreBody"></tbody>
+        </table>
+      </div>
+    </details>
     <details class="cc-tools"><summary>Claude Code's own tools</summary>
       <div class="table-scroll">
         <table class="data-table" id="ccToolsTable">
           <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Errors</th>
-            <th class="num">Error rate</th><th>People</th></tr></thead>
+            <th class="num">Error rate</th><th>People (errors)</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
       <p class="foot-note">Tools Claude Code uses to manage its own work (tasks, schedules, plan mode, worktrees). Their errors are Claude Code's, not an integration to fix.</p>
     </details>
+    <div id="frictionNotes"></div>
     <p class="foot-note">Tool calls that returned an error across the selected people, for anything called at least 20 times, most
-      errors first. MCP tools are grouped by their server. A built-in tool name that never once succeeded is one the model made up,
-      not a tool to fix, and is left out. Our suggestion, not Anthropic's: a tool that fails often for everyone may be an integration
-      or a permission worth checking.</p>
+      errors first: every MCP server that qualifies, then the built-in tools (more under &ldquo;Show more&rdquo;). MCP tools are grouped
+      by their server. The People column names who hit errors, with how many. A refusal (a permission denied or a hook that blocked a
+      call) isn&rsquo;t an error (exports before schema 13 can&rsquo;t tell them apart, and count them as errors; a note above says
+      when that applies). A tool name that isn&rsquo;t in Claude Code&rsquo;s documented tool list and never succeeded (made up by
+      the model, or not available) is left out, and an MCP tool name that never succeeded while its server&rsquo;s other tools did is listed apart, not
+      counted in the server&rsquo;s rate; a real tool that fails every time stays. Our suggestion, not Anthropic's: a tool that fails
+      often for everyone may be an integration or a permission worth checking.</p>
   </div>
 
   </div>
@@ -250,7 +287,9 @@
     </div>
     <p class="foot-note">Grouped by the repo each PR was opened in, from its own URL — not by the folder the session ran in,
       which is often a different repo. Session cost is the cost of the sessions that opened them, shared evenly when one
-      session opened several. PRs only appear where Claude Code logged them.</p>
+      session opened several; a PR whose export gave no session cost has none here. &ldquo;?&rdquo; or &ldquo;not recorded&rdquo;
+      under &ldquo;Opened from another folder&rdquo; means the export didn&rsquo;t say, not that there were none.
+      PRs only appear where Claude Code logged them.</p>
   </div>
 
     <div class="card">
@@ -258,14 +297,19 @@
       <div class="table-scroll">
         <table class="data-table" id="outputTable">
           <thead><tr><th>Person</th><th class="num">PRs</th><th class="num">Cost per PR</th>
-            <th class="num">Lines added</th><th class="num">Lines removed</th><th class="num">Cost per 1k lines</th>
+            <th class="num">Lines added</th><th class="num">Lines removed</th><th class="num" title="Cost of the sessions with line data, per 1,000 lines added plus removed">Cost per 1k lines</th>
             <th class="num">Spend with line data</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="foot-note">PRs only count where Claude Code logged them. Lines come from Claude Code’s own counter, which the
-        desktop app rarely writes, so cost per 1k lines divides only the spend of sessions that recorded lines; the last column
-        says how much of each person’s spend that is. Blank means not recorded, not zero.</p>
+      <p class="foot-note">PRs only count where Claude Code logged them. From schema 13 on, lines are counted per edit from
+        what each Edit/Write result shows, on the day of the edit; a session with no edit, or from a Claude Code version
+        that doesn&rsquo;t write the diff, has none. Exports before schema 13 took Claude Code&rsquo;s own counter, which has
+        no date and may cover only part of a session, and the desktop app doesn&rsquo;t always write it. Cost per 1k lines divides the whole cost of the sessions that recorded lines by
+        lines added plus removed. The last column is that cost as a share of what all the sessions that started in the
+        selected weeks cost in all (a session counts whole, in the week it started), so it can&rsquo;t pass 100%. Blank means not
+        recorded, not zero.</p>
+      <div id="outputNotes"></div>
     </div>
 
   </div>
@@ -275,8 +319,8 @@
     <div class="card-head"><h2>People</h2></div>
     <div class="table-scroll">
       <table class="data-table" id="peopleTable">
-        <thead><tr><th>Person</th><th>Seat tier</th><th>Usage tier</th><th>Extra usage</th>
-          <th class="num">Seat use</th><th>Last active</th><th class="num">Sessions</th><th class="num">Cost</th>
+        <thead><tr><th>Person</th><th>Seat tier</th><th>Usage tier</th><th>Extra usage enabled</th>
+          <th class="num" title="Active days ÷ workdays. ≥ means a floor: they worked on two machines.">Seat use</th><th>Last active</th><th class="num">Sessions</th><th class="num">Cost</th>
           <th class="num">Subagent share</th><th class="num">PRs</th><th class="num">Seat cost</th>
           <th class="num">Value ×</th><th class="num">API retries</th><th>CLI history</th>
           <th>Window</th><th class="num">Exports</th><th class="num">Schema</th></tr></thead>

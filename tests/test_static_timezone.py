@@ -169,7 +169,9 @@ class TestVersionChartWeek(unittest.TestCase):
                  "sessionById = {s1: PAYLOAD.sessions[0]}; state.from = '2026-09-28'; state.to = '2026-10-11';")
         with mock.patch.dict(os.environ, {"TZ": VIEW_TZ}):
             labels = run_js(DASHBOARD, setup + "renderEnv(); out(charts['versions'].data.labels)")
-        self.assertEqual(labels, ["2026-09-28"])
+        # One bar per week of the range, empty ones included (P3 OE-5); the
+        # session is in the build machine's week.
+        self.assertEqual(labels, ["2026-09-28", "2026-10-05"])
 
 
 if __name__ == "__main__":

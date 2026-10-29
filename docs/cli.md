@@ -120,7 +120,7 @@ python3 collect.py --export DIR  # writes the business-review CSVs
 | `--no-titles` | Leave session titles out of the export |
 | `--check-prices` | Check the rate table against Anthropic's published prices now (ignoring today's cached check); exit 1 if anything differs, the check couldn't run, the page was only partly understood, or a model in your logs isn't listed on the page (`unverified`). See [Cost estimates](cost.md#the-daily-price-check) |
 | `--offline` | Make no network request at all (skips the daily price check) |
-| `--version` | Print the version (`1.0.2`, plus the commit in a git checkout) and exit |
+| `--version` | Print the version (`1.1.0`, plus the commit in a git checkout) and exit |
 | `--data-dir DIR` | Where the tool keeps its files (default `~/.usage-lens`, or `CLAUDE_USAGE_DATA_DIR`). See [Where the tool keeps its files](#where-the-tool-keeps-its-files) |
 | `--merge PATH...` | Team mode: combine people's export zips/CSVs (files or folders) into de-duplicated team CSVs and a report, instead of reading your own logs. See [Team view](team.md) |
 | `--out DIR` | Where `--merge` writes (default `./team-merged`) |

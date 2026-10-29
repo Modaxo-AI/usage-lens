@@ -49,7 +49,7 @@ one costs more per message. The failure patterns the guide names are:
 | The kitchen-sink session (unrelated tasks in one context) | `/clear` between tasks | Yes: context size, session length, compactions |
 | Correcting over and over | "After two failed corrections, `/clear`" | Partly: interrupts and rejections, not the words |
 | The over-specified CLAUDE.md | Prune; keep it under 200 lines | Partly: whether a project CLAUDE.md is loaded |
-| The trust-then-verify gap (no tests or checks) | Always give Claude a check it can run | Only with a privacy decision (§4) |
+| The trust-then-verify gap (no tests or checks) | Always give Claude a check it can run | Partly, and built (§4): shell test, lint and build commands after the last code edit. Browser checks, Stop hooks, `/verify` and `/code-review` can't be seen as shell commands |
 | The infinite exploration | Scope it. The guide's current subagent guidance is parallel work, noisy output and independent review (it no longer says "use subagents to protect your context window") | Yes: main-thread reads vs subagent delegation |
 
 **Cost has published anchors.** Across enterprise deployments the average is
@@ -161,7 +161,7 @@ hard-code it.
 | **What** | Tool error rate by tool and MCP server; runs of ≥3 consecutive errors; refused tool calls by reason |
 | **Fields** | Tool errors (already read). New: `toolDenialKind` (user-rejected, automode-blocked, automode-unavailable, permission-rule, interrupted), `permissionDecision.source`, per-thread order of tool results |
 | **Example** | Overall **2%** error rate, but one MCP server fails **30%** of the time; a handful of error streaks of 3 or more |
-| **Fix shown** | Our suggestion, not Anthropic's: a tool that fails often may be a broken integration, a missing permission rule, or a sandbox gap, often a team-level fix, which makes this the most useful single measure for managers. The worst tool is the one behind the most errors; a name that never once succeeded (a tool the model invented, such as a lowercase `bash`) is ignored |
+| **Fix shown** | Our suggestion, not Anthropic's: a tool that fails often may be a broken integration, a missing permission rule, or a sandbox gap, often a team-level fix, which makes this the most useful single measure for managers. The worst tool is the one behind the most errors. A tool name that isn't in Claude Code's documented tool list (the list also holds a few real but undocumented tools seen in logs, such as `SearchSkills`) and never once succeeded (made up by the model, such as a lowercase `bash`, or not available) is ignored, as is an MCP tool name that never worked while other tools on its server did (a stray name, not a failing server; "never worked" is judged over all your recorded calls, not only the dates on screen, so a real tool is not dropped because its one call in a short range failed); a documented tool that fails every time (`WebSearch` when it isn't permitted) and an MCP server that never works both count. Refused calls (`toolDenialKind`: you or a rule said no) are not errors, here or in "errors in a row" |
 
 ### 3.5 Workflow adoption
 
@@ -174,11 +174,14 @@ hard-code it.
 
 ### 3.6 Recent sessions, scored for habits
 
-Each refresh shows the last ~5 sessions as cards, each tagged with whichever
-habits fired: *ran past 500k for 40 turns*, *auto-compacted 3×*, *resumed cold:
-$4 re-cached*, *3 errors in a row*, *ended on an interrupt*. The Sessions table
-gets the same tags as a column, filterable. This is the "how have my recent
-sessions behaved?" view: specific, recent, and each tag links to its fix.
+Each refresh shows the last 6 sessions as cards, each tagged with whichever
+habits fired. The tags read like *62% over 500k*, *auto-compacted ×3*, *cold
+cache $4.00* (shown from $0.50, a line that is this tool's own), *3 errors in a
+row*, *unchecked edits* and *ended on interrupt*. The Sessions table gets the
+same tags as a column (display only: it can't be filtered by tag). This is the
+"how have my recent sessions behaved?" view: specific and recent. A tag has a
+tooltip saying what it measures; it doesn't link to a fix (the fix is on the
+Overview strip's card).
 
 ---
 
@@ -214,7 +217,7 @@ learning apart from pure delegation. Both need the content itself.
 | A single health score | Penalises experienced users (§1) |
 
 **Profile only, never judged** (shown so people can see their own pattern):
-- prompts per session and actions per prompt, with Anthropic's 5 and 12 as context
+- prompts per session and main-conversation tool calls per prompt, with Anthropic's 5 and 12 actions as context
 - prompts typed while Claude was busy
 - long unattended turns
 - how sessions end
@@ -292,8 +295,9 @@ Not read yet, because no first-build measure uses them: `isSidechain`,
     data reads "no data before this range".
   - Sparklines were left out: the baseline figure carries the comparison.
 - **Habits tab:** follows the dashboard's date range. It shows:
-  - interaction tiles (prompts, requests per prompt, interrupts, compactions,
-    refusals)
+  - interaction tiles (prompts, prompts per session, tool calls per prompt,
+    interrupts, compactions, refusals) and a note saying which group each figure
+    counts
   - main-conversation spend by context size over time
   - cache misses by Claude Code's reason
   - permission mode at prompt time
@@ -376,6 +380,31 @@ strip and the "Usage limits & friction" panel; covered by
   measure; spend at or under $13 is no longer called healthy; an empty earlier
   window reads "no data before this range".
 - **Sources** corrected as in §1, §3 and Sources.
+
+**Habits fixes, 1.1.0.** A third review changed these (tests:
+`tests/test_p3_dashboard.py`):
+- **"Tool calls per prompt"** replaces "Requests per prompt". It is the number of
+  main-conversation tool calls (subagents left out) per prompt you sent, set
+  against Anthropic's roughly 5 actions for novices and 12 for experts, which are
+  Claude's actions per prompt. API requests were 71% subagent work and didn't
+  compare. Prompts and tool calls aren't split by model, so under a model filter
+  the tile shows "—" and says why.
+- **"Not recorded by this Claude Code version"** is decided from sessions that
+  worked in the selected days, not only those that ended in them; with none, the
+  tile says "no session worked in these dates". Prompts per session and the
+  checking tile say "no session ended in these dates" when that is the reason for
+  the dash. The median prompts per session keeps a half (4.5, not 5).
+- **Checking work** is named for what it sees: shell test, lint and build commands
+  (tiles, tag and footnote say "shell"). The footnote quotes Anthropic's
+  best-practices page only for "Give Claude a check to run".
+- **Four groups of sessions** sit on the tab (what happened on the days; sessions
+  that ended on them; requests on them; main-conversation tool calls); a note
+  under the tiles says which figure uses which.
+- **Cold-cache tag** says its $0.50 line is this tool's own and that not every
+  break is avoidable.
+- **Away recaps** (`away_summary`) show beside the prompt count.
+- **Invented tool names** are decided by name against Claude Code's documented
+  tool list (plus a few real, undocumented tools), as described in §3.4.
 
 **Phase 4, only if approved:** the remaining §4 signals (correction clusters,
 blind retries, edit churn), one at a time, each documented in docs/privacy.md and

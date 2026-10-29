@@ -38,12 +38,56 @@ const MODE_LABELS = {
 };
 const EXPIRED_MISS = 'previous_message_not_found';
 
-// A built-in tool name that never once succeeded is one the model made up (a
-// lowercase `bash`): no such tool exists, so nothing can be fixed. An MCP tool
-// that never succeeded is different: a broken integration, worth showing.
+// Claude Code's own tools, by name (code.claude.com/docs/en/tools-reference,
+// checked 2026-10-29), plus the older names it has renamed and a few real ones
+// that appear in logs without being documented.
+const BUILTIN_TOOLS = new Set([
+  'Agent', 'Artifact', 'AskUserQuestion', 'Bash', 'CronCreate', 'CronDelete', 'CronList', 'Edit',
+  'EndConversation', 'EnterPlanMode', 'EnterWorktree', 'ExitPlanMode', 'ExitWorktree', 'Glob', 'Grep',
+  'LSP', 'ListAgents', 'ListMcpResourcesTool', 'Monitor', 'NotebookEdit', 'PowerShell', 'PushNotification',
+  'Read', 'ReadMcpResourceTool', 'RemoteTrigger', 'ReportFindings', 'ScheduleWakeup', 'SendFeedback',
+  'SendMessage', 'SendUserFile', 'ShareOnboardingGuide', 'Skill', 'SubagentHandback', 'TaskCreate',
+  'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate', 'TodoWrite', 'ToolSearch',
+  'WaitForMcpServers', 'WebFetch', 'WebSearch', 'Workflow', 'Write',
+  // real in Claude Code's logs but not on the documented list
+  'SearchSkills', 'DesignSync', 'PublishPlugin', 'ListSkills', 'ListPlugins',
+  // renamed or retired
+  'Task', 'MultiEdit', 'LS', 'NotebookRead', 'TodoRead', 'KillShell', 'BashOutput', 'exit_plan_mode',
+]);
+function isMcpTool(name) { return String(name).startsWith('mcp__'); }
+
+// A tool name that isn't in Claude Code's documented tool list and never succeeded: made up by
+// the model (a lowercase `bash`), or not available in that session. Nothing there
+// can be fixed. Decided by name, so a real tool that fails every time (WebSearch
+// when it isn't permitted) stays in the ranking, and so does any MCP tool.
 // Used wherever tools are ranked by their errors (here and app.js).
 function inventedTool(name, t) {
-  return !String(name).startsWith('mcp__') && t.calls > 0 && t.errors >= t.calls;
+  return !isMcpTool(name) && !BUILTIN_TOOLS.has(name) && t.calls > 0 && t.errors >= t.calls;
+}
+// An MCP tool name that never succeeded while another tool on the same server
+// did: a misspelt or retired tool name, not a failing server. Listed apart and
+// kept out of the server's error rate. Decided from every call ever recorded
+// (all dates, projects and models), then applied to whatever is in the range:
+// otherwise a real tool whose only call in a short range failed would be
+// dropped as a stray. Servers are compared by their tidied label
+// (mcpServerOf, app.js), so one service added three ways counts as one server.
+let _strayCache = null;
+function strayMcpTools() {
+  const rows = (PAYLOAD && PAYLOAD.tools) || [];
+  if (_strayCache && _strayCache.rows === rows && _strayCache.n === rows.length) return _strayCache.set;
+  const byTool = {};
+  rows.forEach(r => {
+    if (!isMcpTool(r[2])) return;
+    const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
+    t.calls += r[3]; t.errors += r[4];
+  });
+  const worked = new Set();
+  Object.entries(byTool).forEach(([n, t]) => { if (t.calls > t.errors) worked.add(mcpServerOf(n)); });
+  const set = new Set(Object.entries(byTool)
+    .filter(([n, t]) => t.calls > 0 && t.errors >= t.calls && worked.has(mcpServerOf(n)))
+    .map(([n]) => n));
+  _strayCache = { rows, n: rows.length, set };
+  return set;
 }
 
 function habitsAvailable() { return !!(PAYLOAD && PAYLOAD.health); }
@@ -142,39 +186,52 @@ function habitMeasures(w) {
   let streaks = 0;
   healthRows('error_streaks', w).forEach(r => { if (r[2] >= h.thresholds.error_streak) streaks += r[3]; });
 
-  let toolCalls = 0, toolErrors = 0;
+  let toolCalls = 0, toolErrors = 0, mainToolCalls = 0;
   const byTool = {};
-  PAYLOAD.tools.filter(r => inWindow(r[0], w) && sessionOk(r[1])).forEach(r => {
+  // Tool rows follow the project filter and, where the row says which model made
+  // the call, the model filter too (toolModelOk, app.js).
+  PAYLOAD.tools.filter(r => inWindow(r[0], w) && projectOk(projectOf(r[1])) && toolModelOk(r)).forEach(r => {
     toolCalls += r[3]; toolErrors += r[4];
+    if (!r[5]) mainToolCalls += r[3];
     const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
     t.calls += r[3]; t.errors += r[4];
   });
-  // The tool behind the most errors. A built-in name that never once
-  // succeeded is one the model made up (a lowercase `bash`), not a tool to
-  // fix, so it is not a candidate; an MCP tool that never succeeded is a
-  // broken integration, and is. The rank is by errors, not by rate, so a
-  // rarely-called tool can't outrank the one that accounts for the failures.
+  // The tool behind the most errors. A name that isn't a documented tool and never once
+  // succeeded is one the model made up (a lowercase `bash`), not a tool to fix,
+  // and an MCP tool name that never worked on a server whose other tools did is
+  // a stray name rather than a failing integration: neither is a candidate. A
+  // whole MCP server that never works is, and is. The rank is by errors, not by
+  // rate, so a rarely-called tool can't outrank the one behind most failures.
+  const stray = strayMcpTools();
   const worstTool = Object.entries(byTool)
-    .filter(([name, t]) => t.calls >= 10 && t.errors > 0 && !inventedTool(name, t))
+    .filter(([name, t]) => t.calls >= 10 && t.errors > 0 && !inventedTool(name, t) && !stray.has(name))
     .map(([name, t]) => ({ name, errors: t.errors, rate: t.errors / t.calls, calls: t.calls,
                            shareOfErrors: toolErrors ? t.errors / toolErrors : null }))
     .sort((a, b) => b.errors - a.errors || a.name.localeCompare(b.name))[0] || null;
 
   const sessions = habitSessions(w);
+  // Whether this Claude Code version records a measure is read from the sessions
+  // that did work in the window, not only those that ended in it: a range where
+  // everything is still open has none of the second kind, and "not recorded"
+  // would be wrong.
+  const activeIds = new Set(usage.map(r => r[1]));
+  const endedIds = new Set(sessions.map(s => s.id));
+  const worked = PAYLOAD.sessions.filter(s => !s.derived && s.health && didWork(s) &&
+    projectOk(s.project) && (activeIds.has(s.id) || endedIds.has(s.id)));
   const edited = sessions.filter(s => s.health.edits > 0);
   const withInstr = sessions.filter(s => s.health.instructions !== null);
   return {
     w, spend, requests, activeDays, mainCost, longCost, veryLongCost, coldCost, missCost, missByReason,
-    ev, denials, modes, checks, streaks, toolCalls, toolErrors, worstTool,
-    sessions,
+    ev, denials, modes, checks, streaks, toolCalls, toolErrors, mainToolCalls, worstTool, stray,
+    sessions, worked: worked.length,
     edited: edited.length,
     checked: edited.filter(s => s.health.checked_after_last_edit === true).length,
     withSubagents: sessions.filter(s => s.n_subagents > 0).length,
     withPlan: sessions.filter(s => s.health.plan_mode).length,
     instrRecorded: withInstr.length,
     withProjectMd: withInstr.filter(s => (s.health.instructions || []).includes('Project')).length,
-    denialsRecorded: sessions.some(s => s.health.recorded && s.health.recorded.denials),
-    compactionsRecorded: sessions.some(s => s.health.recorded && s.health.recorded.compactions),
+    denialsRecorded: worked.some(s => s.health.recorded && s.health.recorded.denials),
+    compactionsRecorded: worked.some(s => s.health.recorded && s.health.recorded.compactions),
     // Context tax is a share of main-conversation spend (docs/usage-health.md
     // §3.1), as in the session tags, the export and the team view: subagents
     // carry their own, smaller contexts.
@@ -260,7 +317,7 @@ function habitCards(r, b) {
     status: shareStatus(r.coldShare),
     value: r.spend > 0 ? `${fmtPct(r.coldShare)} <span class="unit">of spend</span>` : '—',
     sub: `${fmtCost(r.coldCost)} re-caching after the cache expired · ${pctVs(r.coldShare, b.coldShare)}`,
-    fix: 'After a long break, start fresh (or resume from a summary) instead of reopening a big session.',
+    fix: 'After a long break you could start fresh (or resume from a summary) rather than reopen a big session; not every break is avoidable.',
     link: src.costs,
     tip: "Extra paid to rebuild the prompt cache when a session was picked up after its cache expired, " +
          "by Claude Code's own cache-miss label, over reading the same tokens from a warm cache. " +
@@ -285,12 +342,14 @@ function habitCards(r, b) {
     label: 'Checking work',
     status: null,
     value: r.edited ? `${fmtInt(r.checked)} <span class="unit">of ${fmtInt(r.edited)} sessions</span>` : '—',
-    sub: (r.edited ? 'ran a test, lint or build after their last code edit' : 'no sessions edited code') +
+    sub: (r.edited ? 'ran a shell test, lint or build after their last code edit' : 'no sessions edited code') +
          ` · ${pctVs(null, ratio(b.checked, b.edited))}`,
     fix: 'Give Claude a check it can run: tests, a build, a linter.',
     link: src.best_practices,
-    tip: "Sessions that edited files and then ran a test, lint or build. Anthropic's research finds " +
-         'verified success (passing tests, commits) is about twice as common for experienced users.',
+    tip: "Sessions that edited files and then ran a test, lint or build command in the shell. Browser " +
+         "checks, Stop hooks, /verify and /code-review aren't counted: this tool can only see shell " +
+         "commands. Anthropic's research finds verified success (passing tests, commits) is about " +
+         'twice as common for experienced users.',
   });
   cards.push({
     label: 'Friction',
@@ -303,8 +362,10 @@ function habitCards(r, b) {
     fix: "Our suggestion, not Anthropic's: a tool that fails often may be an integration or permission worth checking.",
     link: null,
     tip: 'Tool calls that returned an error, runs of consecutive failures, and the tool behind the most ' +
-         'errors (at least 10 calls; a built-in tool name that never succeeded is one the model ' +
-         'invented and is left out, while an MCP tool that never succeeded is a broken integration and counts).',
+         'errors (at least 10 calls). A tool name that is not in Claude Code\'s documented tool list and never succeeded ' +
+         '(made up by the model, or not available) is left out, and so is an MCP tool name that never ' +
+         'worked while the server\'s other tools did; a documented tool that fails every time, or an MCP server ' +
+         'that never works, counts. Refused calls (you or a rule said no) are not errors.',
   });
   cards.push({
     label: 'Workflow',
@@ -377,13 +438,15 @@ function sessionHabitTags(s) {
   }
   if (h.cold_cache_cost >= 0.5) {
     tags.push([`cold cache ${fmtCost(h.cold_cache_cost)}`,
-      'Extra paid to rebuild the cache after it expired between requests.', 'warn']);
+      'Extra paid to rebuild the cache after it expired between requests. Tagged from $0.50: that line is ' +
+      "this tool's own, not Anthropic's, and a break long enough to expire the cache isn't always avoidable.", 'warn']);
   }
   if (h.max_error_streak >= t.error_streak) {
     tags.push([`${h.max_error_streak} errors in a row`, 'The longest run of consecutive failed tool calls.', '']);
   }
   if (h.checked_after_last_edit === false) {
-    tags.push(['unchecked edits', 'Edited files without running a test, lint or build afterwards.', '']);
+    tags.push(['unchecked edits', 'Edited code without running a shell test, lint or build afterwards ' +
+      "(browser checks, hooks and /verify aren't counted).", '']);
   }
   if (h.ended_on_interrupt) {
     tags.push(['ended on interrupt', 'The last thing in the session was you stopping Claude.', '']);
@@ -408,23 +471,48 @@ function renderHabits() {
   const h = PAYLOAD.health;
   const prompts = m.ev.prompt;
 
-  const promptsPerSession = median(m.sessions.map(s => s.health.prompts).filter(n => n > 0).sort((a, b) => a - b));
+  const perSession = m.sessions.map(s => s.health.prompts).filter(n => n > 0).sort((a, b) => a - b);
+  const promptsPerSession = median(perSession);
+  // A median of whole numbers can land halfway (4.5): showing 5 would overstate it.
+  const medianText = promptsPerSession == null ? '—'
+    : Number.isInteger(promptsPerSession) ? fmtInt(promptsPerSession) : promptsPerSession.toFixed(1);
+  // Prompts and tool calls aren't recorded per model, so a model filter can't
+  // split their ratio: it would divide a filtered numerator by an unfiltered one.
+  const modelFiltered = state.models.length > 0;
+  const noSession = 'no session ended in these dates';
+  // The version line is where these logs first show the record, not a
+  // documented Claude Code release (HB-9), so the caption says only that.
+  const NOT_SEEN_YET = 'not in these logs before a later Claude Code version';
+  const compSub = !m.worked ? 'no session worked in these dates'
+    : m.compactionsRecorded ? `${fmtInt(m.ev.auto)} automatic · ${fmtInt(m.ev.manual)} manual`
+    : NOT_SEEN_YET;
+  const denialSub = !m.worked ? 'no session worked in these dates'
+    : m.denialsRecorded ? 'by you, auto mode or a rule' : NOT_SEEN_YET;
   renderTiles('habitTiles', [
-    ['Prompts', fmtInt(prompts), `${fmtInt(m.ev.queued)} typed while Claude was busy`],
-    ['Prompts per session', promptsPerSession == null ? '—' : fmtInt(promptsPerSession), 'median'],
-    ['Requests per prompt', prompts ? (m.requests / prompts).toFixed(1) : '—',
-     'Anthropic: ~5 actions for novices, ~12 for experts',
-     'API requests (main and subagent) per prompt you sent. Anthropic counts actions, which differs, ' +
-     'so read it as a profile, not a target. Bigger delegation goes with expertise.'],
+    ['Prompts', fmtInt(prompts),
+     [`${fmtInt(m.ev.queued)} typed while Claude was busy`,
+      m.ev.away ? `${fmtInt(m.ev.away)} away recap${m.ev.away === 1 ? '' : 's'}` : null].filter(Boolean).join(' · '),
+     'Away recaps are the summaries Claude Code writes when you come back to a session after a break.'],
+    ['Prompts per session', medianText, m.sessions.length ? 'median · sessions that ended in these dates' : noSession],
+    ['Tool calls per prompt',
+     !modelFiltered && prompts ? (m.mainToolCalls / prompts).toFixed(1) : '—',
+     modelFiltered ? 'not split by model: clear the model filter' : 'Anthropic: ~5 actions for novices, ~12 for experts',
+     'Tool calls Claude made in the main conversation (subagents\' calls left out) per prompt you sent. ' +
+     'Anthropic counts Claude\'s actions per prompt; a tool call is the closest thing these logs hold, so ' +
+     'read it as a profile, not a target. Bigger delegation goes with expertise.'],
     ['Interrupts', prompts ? `${fmtInt(m.ev.interrupt)}` : '—',
      prompts ? `${(100 * m.ev.interrupt / prompts).toFixed(1)} per 100 prompts` : null,
      'Experienced users interrupt more, not less (Anthropic, 2026): this is a profile, not a score.'],
-    ['Compactions', m.compactionsRecorded ? fmtInt(m.ev.auto + m.ev.manual) : '—',
-     m.compactionsRecorded ? `${fmtInt(m.ev.auto)} automatic · ${fmtInt(m.ev.manual)} manual`
-                           : 'not recorded by this Claude Code version'],
-    ['Refused tool calls', m.denialsRecorded ? fmtInt(Object.values(m.denials).reduce((a, b) => a + b, 0)) : '—',
-     m.denialsRecorded ? 'by you, auto mode or a rule' : 'not recorded by this Claude Code version'],
+    ['Compactions', m.compactionsRecorded ? fmtInt(m.ev.auto + m.ev.manual) : '—', compSub],
+    ['Refused tool calls', m.denialsRecorded ? fmtInt(Object.values(m.denials).reduce((a, b) => a + b, 0)) : '—', denialSub],
   ]);
+  // Four different groups sit on this tab; say which each figure counts.
+  const note = document.getElementById('habitPopulations');
+  if (note) note.textContent =
+    `What each figure counts: prompts, interrupts, compactions and refusals are what happened on the selected ` +
+    `days; prompts per session and "checked after last edit" count the ${fmtInt(m.sessions.length)} session` +
+    `${m.sessions.length === 1 ? '' : 's'} that ended on them (originals that made at least one request); the ` +
+    `charts below count requests on the selected days; tool calls per prompt counts main-conversation tool calls.`;
 
   renderContextChart(w);
   renderMissChart(m);
@@ -515,11 +603,11 @@ function renderMissChart(m) {
 function renderCheckTiles(m) {
   const c = m.checks;
   renderTiles('habitCheckTiles', [
-    ['Checked after last edit', m.edited ? `${fmtInt(m.checked)} of ${fmtInt(m.edited)}` : '—',
-     'sessions that edited files'],
-    ['Test runs', fmtInt(c.test || 0)],
-    ['Lint & type checks', fmtInt(c.lint || 0)],
-    ['Builds', fmtInt(c.build || 0)],
+    ['Shell check after last edit', m.edited ? `${fmtInt(m.checked)} of ${fmtInt(m.edited)}` : '—',
+     m.edited ? 'sessions that edited code' : (m.sessions.length ? 'no session edited code' : 'no session ended in these dates')],
+    ['Shell test runs', fmtInt(c.test || 0)],
+    ['Shell lint & type checks', fmtInt(c.lint || 0)],
+    ['Shell builds', fmtInt(c.build || 0)],
     ['Commits', fmtInt(c.commit || 0)],
     ['PRs opened', fmtInt(c.pr || 0)],
   ]);

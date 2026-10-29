@@ -69,7 +69,9 @@ class TestTeamFrictionRanking(unittest.TestCase):
         snippet = (f"const fs = findings({{people: [{{person: 'p0'}}], tools: {json.dumps(tools)}}}, '2026-02-09');"
                    "out(fs.filter(f => f.rule === 'integration').map(f => f.text));")
         texts = run_js(["static/team-findings.js"], snippet)
-        self.assertTrue(texts[0].startswith("big (MCP)"), texts)
+        # One finding for all the failing integrations (P3 TO-3), worst first.
+        self.assertEqual(len(texts), 1, texts)
+        self.assertLess(texts[0].index("big (MCP)"), texts[0].index("small (MCP)"), texts)
 
 
 class TestSessionsStarted(unittest.TestCase):

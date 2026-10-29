@@ -38,8 +38,17 @@ from . import __version__, paths, pricing
 # very_long_context_cost_usd (main-conversation spend on requests over 500k
 # tokens) to the summary and sessions sheets; schema 11 added week_active_days
 # (the person's distinct active days in each week) to the summary sheet; schema
-# 12 stopped counting transcripts that never got a reply in sessions_started.
-EXPORT_SCHEMA_VERSION = 12
+# 12 stopped counting transcripts that never got a reply in sessions_started;
+# schema 13 changed what some columns mean, with no column added or removed:
+# lines_added/lines_removed are counted from each edit's own diff (a session
+# with no edit is blank) instead of from the CLI counter; permission_mode is
+# the real permission mode (it was the editor's input mode, always "normal");
+# the sessions sheet's tool_calls/tool_errors include subagents, as the summary
+# always did; tool_errors exclude refused calls; prs_opened counts a PR once, on
+# the session with its earliest link; the summary's health counts and sessions_*
+# shares leave out transcripts that got no reply; an export from a machine with
+# no logs covers the last 30 days, not one.
+EXPORT_SCHEMA_VERSION = 13
 
 # The team-wide zone exports bucket their days and weeks in: `--tz`, else this
 # variable, else UTC. Never the machine's own zone, so the same logs exported
@@ -54,6 +63,11 @@ DEFAULT_CLI_RETENTION_DAYS = 30
 # age; with sparse use it can be a few days younger. History that starts more
 # recently than this many days inside the window is a new user, not deletion.
 CLI_RETENTION_SLACK_DAYS = 7
+
+# An export from a machine with no logs at all covers this many days back from
+# today (the retention period above: older CLI work is gone, so an idle seat has
+# been idle at least that long) unless --since says otherwise.
+NO_LOGS_WINDOW_DAYS = DEFAULT_CLI_RETENTION_DAYS
 
 # A seat with no recorded request in this many days before the export is idle.
 IDLE_AFTER_DAYS = 14

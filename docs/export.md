@@ -71,6 +71,24 @@ Writes six files, stamped with your git identity:
 | `claude-usage-prs-<you>-<date>.csv` | pull request |
 | `claude-usage-tools-<you>-<date>.csv` | person x week x project x tool |
 
+### The core columns
+
+The summary and sessions files share most of these; the rest of this page covers
+the columns added later, by schema.
+
+| Column | What it is |
+|---|---|
+| `week_start` | Summary: the Monday (in the [export zone](#the-export-zone)) of the week the row's requests, tool calls and events happened in; the session-level columns land in the week the session started |
+| `requests`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `thinking_tokens`, `total_tokens` | Deduplicated by response (`message.id`). `total_tokens` is input + output + cache read + cache write; thinking is already inside output |
+| `cache_write_tokens` | Cache writes, 5-minute plus 1-hour. Where a response logs both the `cache_creation` split and the flat `cache_creation_input_tokens` total and they disagree, **the split is authoritative** (it is what is billed, per lifetime, and what the cost and every token column use); the flat total is read only when there is no split. See [Cost estimates](cost.md#cache-writes-when-the-two-fields-disagree) |
+| `web_search_requests`, `web_fetch_requests` | Calls of Claude Code's own WebSearch and WebFetch tools, counted from tool calls (the API's server-side counters are always zero here) |
+| `tool_calls`, `tool_errors` | Tool calls by the main conversation **and its subagents**, and those that failed. **A refused call is not an error**: a call you, auto mode or a rule refused (`toolDenialKind`) is counted in `tool_calls` and in `tool_refusals`, never in `tool_errors`. The sessions sheet used to count the main conversation only (schema 12 and earlier), while the summary included subagents; from schema 13 both include them |
+| `prs_opened` | Pull requests opened. A PR is counted once, on the session with its **earliest** `pr-link`, and dated by it; the summary dates it by that link and the sessions sheet by the session. Summing either sheet gives the PR count |
+| `lines_added`, `lines_removed` | Lines the session's own edits added and removed (schema 13). Counted from the diff in each Edit/Write result (or, for a new file, its length), so a session that made no edit, or ran on a Claude Code version that doesn't write the diff, is **blank** rather than 0. Before schema 13 they were the CLI cost counter's totals, which have no date and may cover only part of a session. Summary rows carry each edit's lines in the week it was made |
+| `models_used`, `skills_used` | Summary: the model ids and the skill names (a skill's own name, e.g. `superpowers:brainstorming`) that had requests in the row. Sessions sheet: `models` and `skills`, the same for the session |
+| `subagents` | Sessions sheet: how many subagents the session ran. A subagent transcript copied under two parent sessions counts once |
+| `permission_mode` | The permission mode the session most often ran in (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`), from the mode on each of its user records. Before schema 13 this was Claude Code's editor-input mode (always `normal`) and carried no information |
+
 ### Usage-health columns and the tools file (schema 7)
 
 The [usage-health measures](usage-health.md) travel in the export, so a team
@@ -78,7 +96,7 @@ view can summarise habits across people. They are counts and dollars only.
 
 **Summary file**, per person x project x week. Per-request measures land in the
 week they happened. The `sessions_*` counts land in the week each session
-started, like lines and PRs.
+started, like PRs. Lines changed land in the week of the edit, like requests.
 
 | Column | What it is |
 |---|---|
@@ -91,7 +109,7 @@ started, like lines and PRs.
 | `tool_refusals` | Tool calls refused by you, auto mode or a permission rule |
 | `error_streaks` | Runs of 3 or more consecutive failed tool calls |
 | `test_runs`, `lint_runs`, `build_runs`, `commits` | Shell commands Claude ran, by category. Only the category is kept, never the command |
-| `sessions_edited`, `sessions_checked_after_edit` | Sessions that edited code, and those that ran a test, lint or build after their last code edit. Edits to prose (`.md`, `.txt` and the like) and to Claude Code's own files under `.claude` don't count: nothing checks them |
+| `sessions_edited`, `sessions_checked_after_edit` | Sessions that edited code, and those that ran a test, lint or build after their last code edit. Edits nothing in the session checks don't count: prose (`.md`, `.txt` and the like), images (`.svg`), Claude Code's own files under `.claude`, throwaway files in a temp or scratch folder, and any file outside the folder the session ran in |
 | `sessions_plan_mode`, `sessions_with_subagents` | Sessions that used plan mode, or spawned a subagent |
 | `sessions_instructions_recorded`, `sessions_with_project_claude_md` | Sessions whose Claude Code version records which instruction files it loaded, and those where a project CLAUDE.md was loaded. The first is the denominator for the second |
 
@@ -216,7 +234,8 @@ no activity have no rows here; the summary file carries those.
 Why it matters: tokens and cost tell different stories. On a real log set,
 subagents were 36% of cost but 59% of output tokens and 70% of thinking tokens,
 because they mostly run on cheaper models. And Fable was 21% of cost for 7% of
-output. On a seat plan, tokens are what use up the allowance, so look at both.
+output. On a seat plan the whole conversation draws on the allowance (input and
+cache reads as well as output), so look at both.
 
 ### How the summary and sessions files differ
 
@@ -282,6 +301,7 @@ Included by default:
 | cost, tokens, requests, tool calls, errors | Your spend and activity |
 | the usage-health columns and the tools file | How you work: prompts and interrupts, how large your context gets, cache rebuilds, checks run after edits, refused and failing tool calls by tool name. Counts and dollars only (see above). The team dashboard shows these **per person**, next to the team median |
 | `cli_version`, `entrypoint`, `permission_mode` | Which Claude Code build and mode you used |
+| `models_used`, `skills_used`, `skills`, `subagent_type`, `tool`, `integration` | The names of the models, skills (including the ones you start with a slash command), subagent types, tools and MCP servers you used. Names only: never what they were given or returned. A tool name from an MCP server can include the server's own name, so it can reveal which internal systems you connect to |
 | `claude_account_email`, `seat_tier`, `rate_limit_tier`, `extra_usage_enabled` | The Claude account signed in on this machine and its plan, from Claude Code's own account cache (`~/.claude.json`). Only these four fields are read; account and organisation ids are not |
 | `project_repo` | The project's git `origin`, e.g. `github.com/example-org/example-repo`. Any `user:token@` embedded in the remote URL is stripped |
 
@@ -337,7 +357,7 @@ every row of one export:
 |---|---|
 | `claude_account_email` | **Join to the seat roster.** This is the Claude account, so it matches the admin console; `person_email` is git's address and often a personal or noreply one |
 | `seat_tier`, `rate_limit_tier`, `extra_usage_enabled` | Compare people on the same plan, and see who can run past their allowance |
-| `schema_version` | Refuse to stack files with different versions without checking. This release is **12** (12 stopped counting transcripts that never got a reply in `sessions_started`; 11 added `week_active_days` to the summary sheet; 10 added `very_long_context_cost_usd` to the summary and sessions sheets; 9 added `output_tokens_imputed` and `est_cost_unlogged_usd`, and imputed subagent output now counts in `output_tokens` and `est_cost_*`; 8 added `bucket_zone` and moved every day and week to the export zone; 7 added the usage-health columns and the tools file; 6 added `machine_id`; 5 the PRs file and `pr_repos`; 4 the limits file and the friction and allowance columns; 3 the breakdown file; 2 these context columns); a file with no such column is 1 |
+| `schema_version` | Refuse to stack files with different versions without checking. This release is **13** (13 changed what columns mean, with none added: `lines_added`/`lines_removed` are counted from each edit instead of from the CLI counter, `permission_mode` is the real permission mode, the sessions sheet's `tool_calls`/`tool_errors` include subagents, `tool_errors` exclude refused calls, `prs_opened` counts a PR once on its earliest-link session, the summary's health counts and `sessions_*` shares leave out transcripts that got no reply, and an export from a machine with no logs covers 30 days; 12 stopped counting transcripts that never got a reply in `sessions_started`; 11 added `week_active_days` to the summary sheet; 10 added `very_long_context_cost_usd` to the summary and sessions sheets; 9 added `output_tokens_imputed` and `est_cost_unlogged_usd`, and imputed subagent output now counts in `output_tokens` and `est_cost_*`; 8 added `bucket_zone` and moved every day and week to the export zone; 7 added the usage-health columns and the tools file; 6 added `machine_id`; 5 the PRs file and `pr_repos`; 4 the limits file and the friction and allowance columns; 3 the breakdown file; 2 these context columns); a file with no such column is 1 |
 | `exported_at`, `window_from`, `window_to` | Spot **overlapping exports** — two files from one person whose windows overlap will double-count the overlap. Keep the later one, or dedupe sessions on `claude_account_email` + `session_id` |
 | `bucket_zone` | The zone every date in the file was bucketed in: the [export zone](#the-export-zone) (`UTC` unless the team set one). Blank in files made before schema 8, which used the exporting machine's own zone. Last column on every sheet until schema 9, whose columns follow it on the summary, sessions and breakdown sheets; schema 10 appends `very_long_context_cost_usd` after those on the summary and sessions sheets, and schema 11 appends `week_active_days` after that on the summary sheet |
 | `timezone` | The UTC offset of the `bucket_zone` at export time. Every date is in that zone — including a session's `started_at` and `ended_at`, and the day a session is filtered and counted by; weeks start at Monday midnight there. The exceptions are the instants `hit_at`, `last_notice_at`, `resets_at`, `resumed_at`, `projected_limit_hit_at` and `allowance_week_start`, which are UTC timestamps whatever the zone. (Before schema 8 it was the exporter's own offset) |
@@ -382,6 +402,16 @@ divide by the number of weeks in the window, not by the number of rows.
 **The window stops at the export date.** Asking for a range that runs into the
 future exports up to today; `window_to` says so.
 
+**An export from a machine with no logs covers the last 30 days.** Claude Code
+deletes CLI transcripts after 30 days by default, so a person who has been away
+that long exports nothing at all. Rather than a one-day window (which would price
+the seat as one idle day and call every earlier week "not covered"), the file
+claims the 30 days up to today (`window_from` is 29 days before `window_to`), has
+`person_active_days` 0, a blank `last_active_date` and `seat_idle` `yes`, and one
+empty row per week. That blank `last_active_date` with 0 active days is how a
+reader tells "no logs at all" from a short window. If the person held the seat
+for longer, export with `--since` to say so.
+
 ### Short history: CLI transcripts are deleted after 30 days
 
 Claude Code deletes CLI transcripts that haven't been touched for
@@ -415,20 +445,23 @@ line up.
 ## Read this before computing a ratio
 
 **These logs measure spend and activity well, and delivered value poorly.** Cost,
-tokens, requests and session counts are complete. Lines changed, PRs and the
-CLI's own cost figure exist only where Claude Code wrote a `cost-state` or
-`pr-link` entry — on a representative log set that was **14 of 50 sessions** for
-lines changed. So a naive `cost / lines_added` is wrong for most of the work.
+tokens, requests and session counts are complete. Lines changed exist only
+where an edit left a diff in the transcript, PRs only where Claude Code wrote a
+`pr-link` entry, and the CLI's own cost figure only where it wrote a
+`cost-state` with a cost — so a naive `cost / lines_added` is wrong for work
+that made no edit.
 
 Three conventions make that visible rather than silent:
 
-- **Lines changed and `cli_reported_cost_usd` are counted once per CLI
-  counter.** A branched or resumed session that carries on its parent's counter
-  inherits the parent's running totals; they appear on the session that did
-  most of the work, and the branch's row is blank. Before this, summing either
-  column double-counted — by 63% for lines on a real log set.
-- **Missing numbers are blank, never `0`.** An empty `lines_added` means "not
-  recorded", not "nothing delivered". A zero would drag down any average taken
+- **`cli_reported_cost_usd` is counted once per CLI counter.** A branched or
+  resumed session that carries on its parent's counter inherits the parent's
+  running total; it appears on the session that did most of the work, and the
+  branch's row is blank. A counter that never recorded any cost (an empty one a
+  reopened session writes) is no counter: blank, not `$0.00`. Lines changed are
+  not taken from the counter: they are counted per edit (see `lines_added`
+  above), so a branch lists only the lines its own edits made.
+- **Missing numbers are blank, never `0`.** An empty `lines_added` means "no
+  edit with a diff was recorded", not "nothing delivered". A zero would drag down any average taken
   over it.
 - **`sessions_with_line_data`, `sessions_with_pr_data` and
   `sessions_with_cli_cost`** say how many of the row's sessions actually carried
@@ -469,8 +502,9 @@ Three conventions make that visible rather than silent:
 Two attribution rules worth knowing:
 
 - **`sessions_started` vs `sessions_active`.** Cost and tokens are per-request
-  and split across weeks naturally; a session's own facts (active time, lines,
-  PRs) are attributed to the week it *started*. So a week can legitimately show
+  and split across weeks naturally; a session's own facts (active time, PRs)
+  are attributed to the week it *started*, while lines changed are counted by the
+  week of each edit. So a week can legitimately show
   cost with `sessions_started = 0` — that is a long session continuing. The
   `sessions_active` column is the count most people expect next to cost.
 - **Fork and resume copies are excluded**, so no session is listed twice — with
@@ -485,9 +519,17 @@ Two attribution rules worth knowing:
   PRs are counted from the URL-deduped list, because a few survive only inside a
   fork transcript.
 
-Export totals reconcile exactly with the dashboard — cost, tokens, requests,
-tool calls and PRs are asserted equal in `tests/test_export.py`. If one of those
-disagrees with the UI, that is a bug. A transcript with no requests (for example
+Export totals reconcile with the dashboard — cost, tokens, requests, tool calls
+and PRs are asserted equal in `tests/test_export.py` — **for the same days in the
+same zone, with no project or model filter**. The dashboard reads its date range
+in your computer's zone, an export reads it in the [export zone](#the-export-zone)
+(UTC unless the team set one), and the Export button ignores the project and
+model filters. So an October 1–15 range on a laptop in Pacific time is a
+different set of requests, at the edges, from the same dates exported in UTC
+(one real log set read $1,344.43 against $1,356.50). To compare like with like,
+set `CLAUDE_USAGE_EXPORT_TZ` to the dashboard's zone, or export with
+`collect.py --export ... --tz <zone>`. With the same zone and no filter, a
+difference is a bug. A transcript with no requests (for example
 a prompt that never got a reply) isn't a session: the dashboard doesn't count
 it, and from schema 12 neither does `sessions_started`. The sessions sheet still
 lists it, with `requests` 0, so count sessions from `sessions_started`, not by

@@ -96,6 +96,9 @@ def write_health_logs(root):
         _tool_result("b3", _ts(2, day=2), "tu-b-test", is_error=True),
         _tool_use("b4", _ts(3, day=2), "tu-b-edit", "Write", {"file_path": SENTINEL}),
         _tool_result("b5", _ts(4, day=2), "tu-b-edit", is_error=True),
+        # The first edit failed (it is no edit); this one went through.
+        _tool_use("b6", _ts(5, day=2), "tu-b-edit2", "Write", {"file_path": SENTINEL}),
+        _tool_result("b7", _ts(6, day=2), "tu-b-edit2"),
     ])
 
 

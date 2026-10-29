@@ -23,7 +23,11 @@ function fmtTokens(n) {
   n = asNum(n);
   if (!Number.isFinite(n)) return '—';
   if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
-  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e6) {
+    // 999,999,999 rounds to "1000.00M" at two places: step up to B instead.
+    const m = (n/1e6).toFixed(2);
+    return +m >= 1000 ? (n/1e9).toFixed(2) + 'B' : m + 'M';
+  }
   if (Math.round(n) < 1e3) return fmtInt(n);
   const k = Math.round(n/100) / 10;
   return k >= 1000 ? (n/1e6).toFixed(1) + 'M' : k.toFixed(1) + 'k';
@@ -43,12 +47,18 @@ function median(sorted) {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
+// A missing duration is a dash; zero is a real "0s" (a session with no gaps
+// between its records), not the same as unknown. Each unit is chosen after
+// rounding, so 59.6 s reads "1m" and 59.6 min reads "1.0h", never "60s"/"60m".
 function fmtDuration(ms) {
-  if (!ms) return '—';
+  if (ms == null || !Number.isFinite(Number(ms))) return '—';
+  ms = Number(ms);
+  if (ms <= 0) return '0s';
   // Under a minute is seconds: rounding 40s to "1m" overstates it by half.
-  if (ms < 60000) return Math.max(1, Math.round(ms / 1000)) + 's';
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return Math.max(1, secs) + 's';
   const m = ms / 60000;
-  if (m >= 60) return (m/60).toFixed(1) + 'h';
+  if (Math.round(m) >= 60) return (m/60).toFixed(1) + 'h';
   return Math.round(m) + 'm';
 }
 function shortProjectLabel(path) {
@@ -62,7 +72,8 @@ function shortProjectLabel(path) {
   return parts.length > 2 ? '.../' + tail : prefix + tail;
 }
 // Trailing 6-hex-character suffix on an auto-generated branch name, e.g.
-// "claude/repo-overview-d339f9".
+// "claude/repo-overview-d339f9". Only Claude Code's own `claude/` branches get
+// one; a branch you named "fix-deadbee" keeps its name.
 const _BRANCH_SUFFIX = /-[0-9a-f]{6}$/;
 
 // "~/code/team/myrepo" -> "myrepo"
@@ -77,8 +88,8 @@ function cleanBranchName(raw) {
   // what worktrees, rebases and bisects all look like.
   if (!raw) return '(no branch)';
   if (raw === 'HEAD') return '(detached)';
-  let name = raw.replace(_BRANCH_SUFFIX, '');
-  if (name.startsWith('claude/')) name = name.slice('claude/'.length);
+  let name = raw;
+  if (name.startsWith('claude/')) name = name.slice('claude/'.length).replace(_BRANCH_SUFFIX, '');
   // Never clean a name down to nothing.
   return name || raw;
 }
@@ -108,7 +119,24 @@ function localDate(iso) {
 // a different day from its own cost rows. `*_day` is that day; localDate() is
 // the fallback for a payload written before the fields existed (and is exact
 // whenever the viewer is in the build zone, as with the live server).
-function sessionStartDay(s) { return s.start_day || localDate(s.start); }
+function sessionRawStartDay(s) { return s.start_day || localDate(s.start); }
+// A fork or resume starts with a copy of the original's records, so its `start`
+// is the original's: up to two weeks before the work it did itself. `active_start`
+// is its own first record. Display and the date filter use that; only the CLI
+// counter's window (which really began with the original) uses the raw start.
+// `start_day` is a day on the build machine, and active_start is an instant, so
+// the shift between the two is measured in the viewer's zone and added to it.
+function sessionStartDay(s) {
+  const base = sessionRawStartDay(s);
+  if (s.active_start_day) return s.active_start_day;
+  if (!base || !s.active_start || !s.start) return base;
+  const a = localDate(s.start), b = localDate(s.active_start);
+  if (!a || !b || a === 'NaN-NaN-NaN' || b === 'NaN-NaN-NaN') return base;
+  const shift = daysBetween(a, b) - 1;
+  return shift > 0 ? addDays(base, shift) : base;
+}
+// The instant a session's own work began (for the Start column and sorting).
+function sessionStartTime(s) { return s.active_start || s.start; }
 function sessionEndDay(s) { return s.end_day || localDate(s.end); }
 function limitHitDay(e) { return e.hit_day || localDate(e.hit_at); }
 // ===================== Time granularity =====================
@@ -185,10 +213,17 @@ function bucketTitle(key, grain) {
 
 // Number of buckets the grain would produce across the selected range. Used to
 // disable grains that would render thousands of bars.
+// Counted the way axisKeys() lays the axis out (whole calendar weeks and
+// months, so a range that straddles a boundary draws one more bar than its
+// length in days suggests).
 function bucketCountFor(grain) {
   const days = daysBetween(state.from, state.to);
-  if (grain === MONTH) return Math.ceil(days / 28);
-  if (grain === 10080) return Math.ceil(days / 7);
+  if (grain === MONTH) {
+    const [fy, fm] = state.from.slice(0, 7).split('-').map(Number);
+    const [ty, tm] = state.to.slice(0, 7).split('-').map(Number);
+    return (ty - fy) * 12 + (tm - fm) + 1;
+  }
+  if (grain === 10080) return (daysBetween(weekOf(state.from), weekOf(state.to)) - 1) / 7 + 1;
   return Math.ceil(days * 1440 / grain);
 }
 
@@ -292,18 +327,39 @@ function modelsOk(models) { return !state.models.length || (models || []).some(m
 function usageRows() {
   return PAYLOAD.usage.filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])) && modelOk(r[2]));
 }
+// Tool rows: [date, session, name, calls, errors, is_sub, model]. The model is
+// the one whose response made the call, so the model filter keeps only those
+// calls; a payload from before the column existed falls back to "sessions that
+// used the model".
+function toolModelOk(r) { return r[6] != null ? modelOk(r[6]) : modelsOk(modelsOfSession(r[1])); }
 function toolRows() {
-  return PAYLOAD.tools.filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])) && modelsOk(modelsOfSession(r[1])));
+  return PAYLOAD.tools.filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])) && toolModelOk(r));
+}
+// Skill-call rows: [date, session, skill, calls] then, in either order, the
+// calling model and how it started ("tool" for the Skill tool, "command" for a
+// slash command). Told apart by value, so the column order isn't load-bearing.
+const SKILL_VIA = ['tool', 'command'];
+function skillCallParts(r) {
+  const extra = r.slice(4);
+  const via = extra.find(v => SKILL_VIA.includes(v)) || 'tool';
+  const model = extra.find(v => typeof v === 'string' && !SKILL_VIA.includes(v));
+  return { model: model == null ? null : model, via };
+}
+function skillCallModelOk(r) {
+  const m = skillCallParts(r).model;
+  return m != null ? modelOk(m) : modelsOk(modelsOfSession(r[1]));
 }
 function skillCallRows() {
-  return PAYLOAD.skillCalls.filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])) && modelsOk(modelsOfSession(r[1])));
+  return PAYLOAD.skillCalls.filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])) && skillCallModelOk(r));
 }
 function agentRows() {
   return PAYLOAD.agents.filter(a => inDateRange(a.date) && projectOk(projectOf(a.session_id)) && modelsOk(a.models));
 }
 // Forks/resumes are copies of a transcript that is already listed, so they are
 // hidden by default -- counting them would double-count sessions and their
-// active time. The Sessions tab has a toggle to show them.
+// active time. The Sessions tab has a toggle to show them, and that toggle
+// changes that table only: every count elsewhere (Overview, Output & env) is of
+// the originals either way.
 function sessionInFilters(s) {
   const sd = sessionStartDay(s), ed = sessionEndDay(s) || sd;
   return sd && ed >= state.from && sd <= state.to && projectOk(s.project) && modelsOk(s.models);
@@ -311,12 +367,20 @@ function sessionInFilters(s) {
 function sessionRows() {
   return PAYLOAD.sessions.filter(s => (!s.derived || state.showForks) && sessionInFilters(s));
 }
-// PRs, friction and limit hits belong to a session rather than a model, so the
-// model filter keeps the ones from sessions that used a selected model -- the
-// same rule tools and skill calls follow.
+// Sessions that made at least one request, originals only: what "a session"
+// means in the header and every tile. A transcript with no reply is listed on
+// the Sessions tab, with a badge, and counted nowhere else.
+function countedSessions() {
+  return PAYLOAD.sessions.filter(s => !s.derived && didWork(s) && sessionInFilters(s));
+}
+// Friction and limit hits belong to a session rather than a model, so the model
+// filter keeps the ones from sessions that used a selected model.
 function sessionOk(sid) { return projectOk(projectOf(sid)) && modelsOk(modelsOfSession(sid)); }
+// Pull requests and lines changed aren't recorded per model, so a model filter
+// can't split them: they follow the project and dates only, and the tiles say so
+// (a session-level model rule would show Haiku-only work as 61% of all lines).
 function prRows() {
-  return PAYLOAD.prs.filter(p => inDateRange(p.date) && sessionOk(p.session_id));
+  return PAYLOAD.prs.filter(p => inDateRange(p.date) && projectOk(projectOf(p.session_id)));
 }
 function tokenTotal(r) { return r[5] + r[6] + r[7] + r[8] + r[9]; }
 // Cost per session from the *filtered* usage rows, so a session's figure
@@ -380,6 +444,22 @@ loadData().then(data => {
 
 let booted = false;
 
+// The palette comes from CSS variables that change with the OS light/dark
+// setting, but a chart reads them once when it is made. When the setting flips,
+// the charts are rebuilt so they don't sit in the old theme until a reload.
+function rethemeCharts() {
+  assignColors();
+  Object.keys(charts).forEach(k => { try { charts[k].destroy(); } catch (e) { /* already gone */ } delete charts[k]; });
+  markAllDirty();
+}
+function watchColorScheme() {
+  try {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', rethemeCharts);
+    else if (mq.addListener) mq.addListener(rethemeCharts);
+  } catch (e) { /* no matchMedia: charts keep the theme they were made in */ }
+}
+
 function init() {
   sessionById = Object.fromEntries(PAYLOAD.sessions.map(s => [s.id, s]));
   indexAgentProjects();
@@ -395,6 +475,7 @@ function init() {
   if (!booted) {
     wireFilterControls();
     wireTabs();
+    watchColorScheme();
     booted = true;
   }
   markAllDirty();
@@ -417,8 +498,10 @@ function renderHeaderMeta() {
   wireExport();
 
   const btn = document.getElementById('refreshBtn');
-  btn.hidden = false;
-  if (!btn.dataset.wired) {
+  // A standalone file has the data baked in: "refreshing" would reload the same
+  // numbers, so the button is offered only where a server can read new logs.
+  btn.hidden = !SERVED_BY_DASHBOARD;
+  if (SERVED_BY_DASHBOARD && !btn.dataset.wired) {
     btn.dataset.wired = '1';
     btn.addEventListener('click', () => {
       btn.disabled = true;
@@ -471,7 +554,10 @@ function wireExport() {
   btn.title =
     'Downloads one zip holding the six business-review CSVs: a person x project x ' +
     'week summary, a per-session sheet, and the breakdown, limits, PRs and tools ' +
-    'files.\n\nCovers the selected date range. ' +
+    'files.\n\nCovers the selected date range only: the project and model filters are ' +
+    'ignored, and the dates are read as days in the export zone' +
+    (zone ? ` (${zone})` : ' (UTC unless CLAUDE_USAGE_EXPORT_TZ is set)') + ', so a total can differ slightly ' +
+    'from this page\'s. The All range exports everything. ' +
     'Identifies you by email and includes session titles, project paths, branch ' +
     'names and PR links.\nContains no prompts, no replies and no code.' +
     (zoneSentence ? '\n\n' + zoneSentence : '');
@@ -485,8 +571,7 @@ function wireExport() {
   btn.dataset.wired = '1';
   btn.addEventListener('click', () => {
     const a = document.createElement('a');
-    a.href = `/api/export/all.zip?from=${encodeURIComponent(state.from)}` +
-             `&to=${encodeURIComponent(state.to)}`;
+    a.href = exportUrl();
     a.download = '';
     document.body.appendChild(a);
     a.click();
@@ -496,6 +581,16 @@ function wireExport() {
     btn.innerHTML = '<span aria-hidden="true">&#10003;</span> Exported';
     setTimeout(() => { btn.innerHTML = original; }, 1600);
   });
+}
+
+// The All range sends no dates at all. This page's first and last day are local
+// days, and the server reads dates as days in the export zone, so turning "All"
+// into those two dates would drop the hours at either edge that fall on the
+// other side of midnight there.
+function exportUrl() {
+  const all = state.from === state._minDate && state.to === state._maxDate;
+  return '/api/export/all.zip' + (all ? '' :
+    `?from=${encodeURIComponent(state.from)}&to=${encodeURIComponent(state.to)}`);
 }
 
 // Anything that silently makes the numbers wrong gets said out loud, rather than
@@ -511,9 +606,19 @@ function renderNotices() {
       `are counted at $0, so every cost below is understated. Add ${unknown.length === 1 ? 'it' : 'them'} to claude_usage/pricing.py.`]);
   }
   const history = PAYLOAD.history || {};
+  // A standalone file can't re-check anything: the price comparison and the
+  // price age below are as of the day it was built, and it says so.
+  const builtOn = PAYLOAD.generated_at ? localDate(PAYLOAD.generated_at) : null;
+  const frozen = SERVED_BY_DASHBOARD ? ''
+    : ` <em>(as of ${esc(builtOn || 'when this file was built')}, the day it was built; this file does not re-check.)</em>`;
   if (history.cli_history_truncated) {
+    // The day the oldest CLI transcript begins, not the day it was last written
+    // (which the payload's own field is).
+    const cliStarts = PAYLOAD.sessions.filter(s => !s.derived &&
+      Object.keys(s.entrypoints || {}).some(k => /cli/i.test(k))).map(sessionRawStartDay).filter(Boolean).sort();
+    const cliFrom = cliStarts.length ? cliStarts[0] : history.cli_history_from;
     notes.push(['warn',
-      `CLI history on this machine starts ${esc(history.cli_history_from)}. Claude Code deletes CLI ` +
+      `CLI history on this machine starts ${esc(cliFrom)}. Claude Code deletes CLI ` +
       `transcripts after ${history.retention_days_default} days by default, so CLI work before then is ` +
       `missing here and only Desktop sessions remain. To keep it from now on, add ` +
       `<code>"cleanupPeriodDays": 365</code> to <code>~/.claude/settings.json</code>.`]);
@@ -533,7 +638,7 @@ function renderNotices() {
     notes.push(['warn',
       `Anthropic's <a href="${safeUrl(check.url)}" target="_blank" rel="noopener">published prices</a> differ from this ` +
       `tool's rate table — ${rows}. Costs below still use the table. Pull the latest version of the tool; ` +
-      `if it still differs, the table needs a dated row (see docs/cost.md).`]);
+      `if it still differs, the table needs a dated row (see docs/cost.md).${frozen}`]);
   }
   // The page parsed only in part, so "prices match" can't be said even if every
   // readable rate does.
@@ -559,7 +664,7 @@ function renderNotices() {
     notes.push(['warn',
       `Prices were last checked against <a href="https://claude.com/pricing" target="_blank" rel="noopener">claude.com/pricing</a> ` +
       `on ${esc(prices.checked)}, ${fmtInt(prices.age_days)} days ago. Re-check them; if any price changed, add a dated row to ` +
-      `<code>claude_usage/pricing.py</code> (never edit a past row) and set <code>PRICES_CHECKED</code> to the day you checked.`]);
+      `<code>claude_usage/pricing.py</code> (never edit a past row) and set <code>PRICES_CHECKED</code> to the day you checked.${frozen}`]);
   }
   if (PAYLOAD.summary.fast_mode_requests) {
     notes.push(['warn',
@@ -636,12 +741,15 @@ function populateFilters() {
   const maxDate = dates[dates.length-1] || PAYLOAD.summary.date_max || minDate;
   const prevMin = state._minDate, prevMax = state._maxDate;
   state._minDate = minDate; state._maxDate = maxDate;
+  let firstLoad = false;
   if (!state.from) {
     // Default view is the last 5 days: at the default 8-hour bucket that's a
     // readable 15 bars, and it's the window most usage questions are about.
     state.from = addDays(maxDate, -(DEFAULT_RANGE_DAYS - 1));
     if (state.from < minDate) state.from = minDate;
     state.to = maxDate;
+    applyUrlState(minDate, maxDate);
+    firstLoad = true;
   } else {
     // A range that ran up to the latest data keeps doing so after a Refresh
     // brings in a new day; otherwise the newest work would fall just outside
@@ -667,10 +775,54 @@ function populateFilters() {
   ensureGrainFits();
   renderGrainControl();
   renderFilterSummary();
+  // What was asked for in the address may have been corrected (a bad date, an
+  // unknown project, a grain too fine for the range): write back what is
+  // actually shown, so the address never claims a view the page isn't in.
+  if (firstLoad) writeUrlState();
 }
 
 const DEFAULT_RANGE_DAYS = 5;
 
+// The view a fresh page opens on: the last DEFAULT_RANGE_DAYS days of data. It is
+// the "no filter" state, so the date chip and the URL leave it out.
+function defaultRange() {
+  const from = addDays(state._maxDate, -(DEFAULT_RANGE_DAYS - 1));
+  return { from: from < state._minDate ? state._minDate : from, to: state._maxDate };
+}
+
+// The filters live in the address (?from=&to=&grain=&project=&model=), so a view
+// can be bookmarked or shared and survives a reload. Read once, at the first
+// load, and validated against what this data holds; anything else is ignored.
+function applyUrlState(minDate, maxDate) {
+  let q;
+  try { q = new URLSearchParams(window.location.search || ''); } catch (e) { return; }
+  const day = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && v >= minDate && v <= maxDate ? v : null;
+  const from = day(q.get('from')), to = day(q.get('to'));
+  if (from && to && from <= to) {
+    state.from = from; state.to = to;
+    setPresetActive(from === minDate && to === maxDate ? 'all' : null);
+  }
+  const g = q.get('grain');
+  const grain = g === MONTH ? MONTH : parseInt(g, 10);
+  if (GRAINS.some(x => x.key === grain)) state.grain = grain;
+  const known = (all, picked) => picked.filter(v => all.includes(v));
+  const projects = known(PAYLOAD.dims.projects, q.getAll('project'));
+  const models = known(PAYLOAD.dims.models, q.getAll('model'));
+  if (projects.length) { projectMS.setValues(projects); state.projects = projectMS.getValues(); }
+  if (models.length) { modelMS.setValues(models); state.models = modelMS.getValues(); }
+}
+function writeUrlState() {
+  try {
+    const q = new URLSearchParams();
+    const d = defaultRange();
+    if (state.from !== d.from || state.to !== d.to) { q.set('from', state.from); q.set('to', state.to); }
+    if (state.grain !== 480) q.set('grain', state.grain);
+    state.projects.forEach(p => q.append('project', p));
+    state.models.forEach(m => q.append('model', m));
+    const qs = q.toString();
+    window.history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : '') + (window.location.hash || ''));
+  } catch (e) { /* a file:// page or an old browser: the filters just aren't in the address */ }
+}
 function addDays(day, n) {
   const d = new Date(day + 'T00:00:00');
   // A non-date input would make toISOString() throw and take the whole render
@@ -688,12 +840,12 @@ function renderGrainControl() {
     const tooMany = n > MAX_BUCKETS;
     return `<button type="button" data-grain="${esc(g.key)}"` +
       `${g.key === state.grain ? ' class="active"' : ''}${tooMany ? ' disabled' : ''}` +
-      ` title="${tooMany ? `${fmtInt(n)} buckets over this range — too many to chart` : `${fmtInt(n)} buckets`}"` +
+      ` title="${tooMany ? `${fmtInt(n)} buckets over this range — too many to chart` : `${fmtInt(n)} bucket${n === 1 ? '' : 's'}`}"` +
       `>${esc(g.label)}</button>`;
   }).join('');
   const g = grainInfo(state.grain);
   document.getElementById('grainSummary').innerHTML =
-    `one bar per <strong>${esc(g.noun)}</strong> &middot; ${fmtInt(bucketCountFor(state.grain))} bars`;
+    `one bar per <strong>${esc(g.noun)}</strong> &middot; ${fmtInt(bucketCountFor(state.grain))} bar${bucketCountFor(state.grain) === 1 ? '' : 's'}`;
 }
 
 // If the range changes such that the active grain is now too fine, step to the
@@ -722,7 +874,10 @@ function syncPresetAvailability() {
   document.querySelectorAll('#presetRow button').forEach(b => {
     const p = b.dataset.preset;
     b.disabled = p !== 'all' && parseInt(p) > span;
-    b.title = b.disabled ? `Only ${span} days of data available` : '';
+    // Ranges end on the last day that has data, not on today.
+    b.title = b.disabled ? `Only ${span} days of data available`
+      : p === 'all' ? 'Every day with data'
+      : `The last ${p} day${p === '1' ? '' : 's'} of data, ending ${state._maxDate}`;
   });
 }
 
@@ -737,8 +892,11 @@ function renderFilterSummary() {
 
   // Active-filter chips: only the things that differ from the default view.
   const chips = [];
+  // The default view (and "All") isn't a filter someone applied, so no chip.
   const isFullRange = state.from === state._minDate && state.to === state._maxDate;
-  if (!isFullRange) {
+  const dflt = defaultRange();
+  const isDefaultRange = state.from === dflt.from && state.to === dflt.to;
+  if (!isFullRange && !isDefaultRange) {
     chips.push({ kind: 'date', label: `${prettyDate(state.from)} – ${prettyDate(state.to)}`, title: 'Date range' });
   }
   state.projects.forEach(p => chips.push({ kind: 'project', value: p, label: shortProjectLabel(p), title: p }));
@@ -759,7 +917,8 @@ function renderFilterSummary() {
 function removeChip(chip) {
   if (!chip) return;
   if (chip.kind === 'date') {
-    setRange(state._minDate, state._maxDate, 'all');
+    const d = defaultRange();
+    setRange(d.from, d.to, String(DEFAULT_RANGE_DAYS));
   } else if (chip.kind === 'project') {
     projectMS.setValues(state.projects.filter(p => p !== chip.value));
     state.projects = projectMS.getValues();
@@ -784,6 +943,7 @@ function setRange(from, to, preset) {
 
 function onFiltersChanged() {
   const coarsened = ensureGrainFits();
+  writeUrlState();
   renderGrainControl();
   renderFilterSummary();
   if (coarsened) {
@@ -826,8 +986,8 @@ function wireFilterControls() {
     projectMS.clear(); modelMS.clear();
     state.projects = []; state.models = []; state.showForks = false;
     state.grain = 480;
-    const from = addDays(state._maxDate, -(DEFAULT_RANGE_DAYS - 1));
-    setRange(from < state._minDate ? state._minDate : from, state._maxDate, String(DEFAULT_RANGE_DAYS));
+    const d = defaultRange();
+    setRange(d.from, d.to, String(DEFAULT_RANGE_DAYS));
   });
   document.getElementById('grainRow').addEventListener('click', e => {
     const btn = e.target.closest('button');
@@ -922,7 +1082,7 @@ function renderGlobalStats() {
   const cacheHit = (inputTok+cacheRead+cacheWrite) > 0 ? cacheRead/(inputTok+cacheRead+cacheWrite) : null;
   // A transcript that never got a reply isn't a session (aggregate.py counts
   // the header's sessions the same way), though the Sessions tab lists it.
-  const sessions = sessionRows().filter(s => (s.requests || 0) > 0).length;
+  const sessions = countedSessions().length;
   const thinking = rows.reduce((s,r) => s+r[10], 0);
   // Responses that logged no thinking count: their thinking is unknown, not 0.
   const thinkingUnlogged = rows.reduce((s,r) => s + (r[17] || 0), 0);
@@ -960,9 +1120,16 @@ function renderGlobalStats() {
   // session's whole life and can't be split by day, so only sessions wholly
   // inside the selected dates count (the reconciliation panel's rule): a
   // month-long session's shortfall doesn't land on the last five days.
-  const withCounter = sessionRows().filter(s => s.est_cost_unlogged != null);
-  const counted = withCounter.filter(s => sessionStartDay(s) >= state.from
-                                          && (sessionEndDay(s) || sessionStartDay(s)) <= state.to);
+  // Fork copies are included whether or not the Sessions table shows them: the
+  // counter sits on whichever transcript owns it, and the toggle must not move
+  // this figure.
+  const withCounter = PAYLOAD.sessions.filter(s => s.est_cost_unlogged != null && sessionInFilters(s));
+  // The span is the whole counter's (every transcript on it, counterSpan), as in
+  // the reconciliation table, not the owner transcript's own days.
+  const counted = withCounter.filter(s => {
+    const span = counterSpan(s);
+    return span.from && span.from >= state.from && span.to <= state.to;
+  });
   const unlogged = counted.reduce((s,x) => s + x.est_cost_unlogged, 0);
   const straddling = withCounter.length - counted.length;
 
@@ -1063,7 +1230,9 @@ function fmtCost0(n) {
   return Number.isFinite(asNum(n)) ? '$' + fmtInt(n) : '—';
 }
 
-function upsertChart(key, canvasId, cfg) {
+// `empty` ({title, body}) replaces the generic "Nothing in this range" when the
+// chart has no marks for a reason the filters didn't cause (calls but no errors).
+function upsertChart(key, canvasId, cfg, empty) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   // A chart with no data points renders as an empty grid, which reads as a bug.
@@ -1073,23 +1242,25 @@ function upsertChart(key, canvasId, cfg) {
     const n = (v && typeof v === 'object') ? v.y : v;
     return typeof n === 'number' && n !== 0;
   }));
-  setChartEmpty(canvas, !hasData);
+  setChartEmpty(canvas, !hasData, empty);
   if (!hasData) return;
   if (charts[key]) { charts[key].data = cfg.data; charts[key].options = cfg.options; charts[key].update(); }
   else { charts[key] = new Chart(canvas, cfg); }
 }
 
-function setChartEmpty(canvas, isEmpty) {
+function setChartEmpty(canvas, isEmpty, msg) {
   const box = canvas.parentElement;
   let note = box.querySelector(':scope > .empty-state');
   canvas.style.visibility = isEmpty ? 'hidden' : '';
-  if (isEmpty && !note) {
-    note = document.createElement('div');
-    note.className = 'empty-state';
-    note.innerHTML = `<div class="es-title">Nothing in this range</div>` +
-      `<div class="es-body">No data matches the current filters.</div>`;
-    box.appendChild(note);
-  } else if (!isEmpty && note) {
+  if (isEmpty) {
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'empty-state';
+      box.appendChild(note);
+    }
+    note.innerHTML = `<div class="es-title">${esc(msg ? msg.title : 'Nothing in this range')}</div>` +
+      `<div class="es-body">${esc(msg ? msg.body : 'No data matches the current filters.')}</div>`;
+  } else if (note) {
     note.remove();
   }
 }
@@ -1273,12 +1444,27 @@ function normalizeModel(m) {
 // left out, rather than its whole total being credited to the range.
 // Fork copies count even when hidden, because the counter's figures sit on
 // whichever transcript owns it, and that can be a copy.
+// The days a CLI counter covers: from the earliest start to the latest end of
+// every transcript on it, not just the owner's. A resumed or forked transcript
+// carries on its parent's counter, so a member that runs past the range means
+// the counter does too, and its figures can't be credited to the range.
+function counterSpan(s) {
+  const members = [s, ...(s.cli_counter_shared_with || []).map(id => sessionById[id]).filter(Boolean)];
+  let from = null, to = null;
+  members.forEach(m => {
+    const a = sessionRawStartDay(m), b = sessionEndDay(m) || a;
+    if (a && (!from || a < from)) from = a;
+    if (b && (!to || b > to)) to = b;
+  });
+  return { from, to };
+}
+
 function reconciliationRows() {
   const selected = new Set(state.models.map(normalizeModel));
   const byModel = {};
   PAYLOAD.sessions.filter(s => {
-    const sd = sessionStartDay(s), ed = sessionEndDay(s) || sd;
-    return sd && sd >= state.from && ed <= state.to && projectOk(s.project) && modelsOk(s.models);
+    const span = counterSpan(s);
+    return span.from && span.from >= state.from && span.to <= state.to && projectOk(s.project) && modelsOk(s.models);
   }).forEach(s => {
     (s.cli_models || []).filter(m => !selected.size || selected.has(normalizeModel(m.model))).forEach(m => {
       const acc = byModel[m.model] = byModel[m.model] ||
@@ -1320,20 +1506,20 @@ function renderReconciliation() {
       <th class="num" colspan="2">Rate check</th><th class="num" rowspan="2">Sessions</th></tr><tr>
       <th class="num">Logged here</th><th class="num">Claude Code counted</th><th class="num">Δ</th>
       <th class="num">Logged here</th><th class="num">Claude Code's $</th><th class="num">Δ</th>
-      <th class="num">Its tokens at list price</th><th class="num">Δ vs its $</th>
+      <th class="num">Its tokens at list price ($)</th><th class="num">Δ vs its $</th>
     </tr></thead><tbody>${body}</tbody></table></div>
     <p class="foot-note"><strong>Logged here</strong> is what the transcripts hold, priced at the list rates, for
     the requests Claude Code's counter could have seen: from the counter's start to its last snapshot.
     <strong>Claude Code counted</strong> and <strong>Claude Code's $</strong> are the counter's own tokens and
-    dollars. <strong>Its tokens at list price</strong> prices the counter's tokens at the published rates (the
+    dollars. <strong>Its tokens at list price</strong> (in dollars) prices the counter's tokens at the published rates (the
     counter doesn't split its cache writes into 5-minute and 1-hour, so they take the transcripts' own split). A positive token or cost Δ means the transcripts hold
     calls the counter didn't, for instance a counter that restarted on resume in a build before 2.1.277. A
     negative one means the counter saw calls no transcript holds; those are priced separately as “not in
     transcripts”. A Δ in the last column means Claude Code charges a rate other than the published one (it
     prices Sonnet 5.5 cache reads at $0.20/MTok against the published $0.10), or, for Haiku 5.5, that some
     calls were over its 100,000-token prompt line, which summed tokens can't show; only that column tests
-    the rate table. Only sessions that started and ended inside the selected dates count
-    (a counter can't be split by day). A transcript carrying on its parent's counter is counted once, with the
+    the rate table. Only counters that lie wholly inside the selected dates count (a counter can't be split
+    by day): every transcript on it, including a resumed or forked one, has to start and end inside. A transcript carrying on its parent's counter is counted once, with the
     parent. The 1M-context <code>[1m]</code> model is folded into the base model.</p>`;
 }
 
@@ -1475,11 +1661,13 @@ function renderSkills() {
   document.getElementById('skillCostTitle').textContent = metric === 'cost' ? 'Cost by skill' : 'Tokens by skill';
   document.getElementById('skillWeeklyTitle').textContent =
     (metric === 'cost' ? 'Cost by skill' : 'Tokens by skill') + ' per ' + grainInfo(state.grain).noun;
+  document.getElementById('skillHeatmapTitle').textContent =
+    'Skill \u00d7 project (' + (metric === 'cost' ? 'cost' : 'tokens') + ')';
 
   // Everything below charts attributed work only; the unattributed share is
   // reported in the tiles above instead of competing for the same axis.
   const attributed = rows.filter(r => (r[3] || NO_SKILL) !== NO_SKILL);
-  renderSkillCoverage(rows, attributed);
+  renderSkillCoverage(rows, attributed, calls, valOf, fmt);
 
   const costBySkill = {};
   attributed.forEach(r => { costBySkill[r[3]] = (costBySkill[r[3]]||0) + valOf(r); });
@@ -1505,7 +1693,9 @@ function renderSkills() {
       plugins: { legend:{display:false} } },
   });
 
-  // Weekly stacked by skill (top 7 + Other)
+  // Weekly stacked by skill (top 7 + Other). The seven are coloured by their
+  // place in this chart, one hue each: the all-time colour map cycles after eight
+  // and would give two of these the same one.
   const top7 = Object.entries(costBySkill).sort((a,b)=>b[1]-a[1]).slice(0,7).map(e=>e[0]);
   const grain = state.grain;
   const weekly = {};
@@ -1517,11 +1707,15 @@ function renderSkills() {
   });
   const skAxis = axisFor(grain);
   const wkLabels = skAxis.labels;
-  const wkSeries = [...top7, 'Other'];
+  // "Other" only when something fell into it: a lone grey legend entry over an
+  // empty chart says nothing.
+  const hasOther = Object.values(weekly).some(b => b.Other);
+  const wkSeries = hasOther ? [...top7, 'Other'] : top7;
+  const wkColor = sk => sk === 'Other' ? cssVar('--other') : cssVar(SERIES_VARS[top7.indexOf(sk) % SERIES_VARS.length]);
   upsertChart('skillWeekly', 'skillWeeklyChart', {
     type: 'bar',
     data: { labels: wkLabels, datasets: wkSeries.map(sk => ({
-      label: sk, stack: 's', backgroundColor: sk === 'Other' ? cssVar('--other') : colorFor(skillColor, sk),
+      label: sk, stack: 's', backgroundColor: wkColor(sk),
       data: skAxis.keys.map(w => (weekly[w] && weekly[w][sk]) || 0),
     })) },
     options: { responsive: true, maintainAspectRatio: false,
@@ -1533,41 +1727,77 @@ function renderSkills() {
       } } } },
   });
   document.getElementById('skillWeeklyLegend').innerHTML = wkSeries.map(sk =>
-    `<span><span class="swatch" style="background:${sk==='Other'?cssVar('--other'):colorFor(skillColor,sk)}"></span>${esc(sk)}</span>`).join('');
+    `<span><span class="swatch" style="background:${wkColor(sk)}"></span>${esc(sk)}</span>`).join('');
 
-  renderSkillHeatmap(attributed);
+  renderSkillHeatmap(attributed, valOf, fmt);
   renderSkillsTable(attributed, calls);
+  renderSkillsFootnote(attributed);
+}
+
+// Output tokens Claude Code logged as a placeholder and this tool imputed are
+// inside every token and dollar figure on the Skills and Agents tabs; say so.
+function imputedNote(rows) {
+  const n = rows.reduce((s, r) => s + (r[16] || 0), 0);
+  return n > 0 ? `${fmtTokens(n)} imputed output tokens are included in these figures` : null;
+}
+function renderSkillsFootnote(attributed) {
+  const el = document.getElementById('skillsFootnote');
+  if (!el) return;
+  const imp = imputedNote(attributed);
+  el.textContent = 'Invocations count a skill Claude started through the Skill tool and one you started with a ' +
+    'slash command. Requests are the ones Claude Code tagged with the skill; a skill invoked but never tagged ' +
+    'shows 0 requests. ' +
+    (imp ? imp[0].toUpperCase() + imp.slice(1) + ': responses logged with a placeholder output count (most subagent ' +
+      'responses from Claude Code 2.1.284 until 2.1.307 fixed it) are counted at an imputed size, in tokens and in cost; ' +
+      'see docs/limitations.md.' : '');
 }
 
 // Says plainly how much of the work the rest of this tab covers, so the
 // excluded 90% is visible rather than silently missing.
-function renderSkillCoverage(allRows, attributed) {
-  const total = allRows.reduce((s,r) => s + r[13], 0);
-  const inSkill = attributed.reduce((s,r) => s + r[13], 0);
+function renderSkillCoverage(allRows, attributed, calls, valOf, fmt) {
+  const word = fmt === fmtCost ? 'Cost' : 'Tokens';
+  const total = allRows.reduce((s,r) => s + valOf(r), 0);
+  const inSkill = attributed.reduce((s,r) => s + valOf(r), 0);
   const names = new Set(attributed.map(r => r[3]));
-  const invocations = skillCallRows().reduce((s,r) => s + r[3], 0);
+  // The table lists every skill with requests or invocations; so does this count.
+  const invoked = new Set(calls.map(r => r[2]));
+  const all = new Set([...names, ...invoked]);
+  const invocations = calls.reduce((s,r) => s + r[3], 0);
+  const byCommand = calls.filter(r => skillCallParts(r).via === 'command').reduce((s,r) => s + r[3], 0);
+  const imp = imputedNote(attributed);
   renderTiles('skillStatTiles', [
-    ['Cost inside a skill', fmtCost(inSkill),
-     total > 0 ? `${fmtPct(inSkill/total)} of ${fmtCost(total)} in range` : null],
-    ['Skills used', fmtInt(names.size), `${fmtInt(invocations)} explicit invocations`],
-    ['Outside any skill', fmtCost(total - inSkill),
+    [`${word} inside a skill`, fmt(inSkill),
+     total > 0 ? `${fmtPct(inSkill/total)} of ${fmt(total)} in range` : null, imp],
+    ['Skills used', fmtInt(all.size),
+     `${fmtInt(names.size)} with requests · ${fmtInt(invocations)} invocation${invocations === 1 ? '' : 's'}` +
+     (byCommand ? ` (${fmtInt(byCommand)} by slash command)` : '')],
+    ['Outside any skill', fmt(total - inSkill),
      total > 0 ? `${fmtPct((total-inSkill)/total)} — charted below excludes this` : null],
   ]);
 }
 
-function renderSkillHeatmap(rows) {
+function renderSkillHeatmap(rows, valOf, fmt) {
   const skills = Array.from(new Set(rows.map(r => r[3]))).filter(Boolean).sort();
-  const projects = topProjectsOf(rows);
+  // The biggest projects, then one "Other" column for the rest, so no spend
+  // drops out of the grid.
+  const top = topProjectsOf(rows);
+  const hasOther = rows.some(r => !top.includes(projectOf(r[1])));
+  const projects = hasOther ? [...top, 'Other'] : top;
   const matrix = {};
   let max = 0;
   rows.forEach(r => {
-    const sk = r[3]; const proj = projectOf(r[1]);
-    if (!projects.includes(proj)) return;
+    const sk = r[3]; const proj = top.includes(projectOf(r[1])) ? projectOf(r[1]) : 'Other';
     const key = sk + '|' + proj;
-    matrix[key] = (matrix[key]||0) + r[13];
+    matrix[key] = (matrix[key]||0) + valOf(r);
     if (matrix[key] > max) max = matrix[key];
   });
   const el = document.getElementById('skillHeatmap');
+  if (!rows.length) {
+    el.style.gridTemplateColumns = '1fr';
+    el.innerHTML = `<div class="empty-state"><div class="es-title">Nothing in this range</div>` +
+      `<div class="es-body">No work inside a skill matches the current filters.</div></div>`;
+    return;
+  }
   el.style.gridTemplateColumns = `120px repeat(${projects.length}, 1fr)`;
   let html = '<div></div>' + projects.map(p => `<div class="hm-label">${esc(shortProjectLabel(p))}</div>`).join('');
   skills.forEach(sk => {
@@ -1575,36 +1805,49 @@ function renderSkillHeatmap(rows) {
     projects.forEach(p => {
       const v = matrix[sk+'|'+p] || 0;
       const frac = max > 0 ? v / max : 0;
-      html += `<div class="hm-cell" style="background:${seqColor(frac)}" title="${esc(sk)} × ${esc(shortProjectLabel(p))}: ${fmtCost(v)}">${v ? fmtCost(v) : ''}</div>`;
+      html += `<div class="hm-cell" style="background:${seqColor(frac)}" title="${esc(sk)} × ${esc(shortProjectLabel(p))}: ${fmt(v)}">${v ? fmt(v) : ''}</div>`;
     });
   });
   el.innerHTML = html;
 }
 
 function renderSkillsTable(rows, calls) {
+  const blank = () => ({ invocations:0, byCommand:0, requests:0, tokens:0, cost:0, sessions:new Set() });
   const bySkill = {};
   rows.forEach(r => {
     const sk = r[3];
-    bySkill[sk] = bySkill[sk] || { invocations:0, requests:0, tokens:0, cost:0, sessions:new Set() };
+    bySkill[sk] = bySkill[sk] || blank();
     bySkill[sk].requests += r[12]; bySkill[sk].tokens += tokenTotal(r); bySkill[sk].cost += r[13];
     bySkill[sk].sessions.add(r[1]);
   });
   calls.forEach(r => {
-    bySkill[r[2]] = bySkill[r[2]] || { invocations:0, requests:0, tokens:0, cost:0, sessions:new Set() };
+    bySkill[r[2]] = bySkill[r[2]] || blank();
     bySkill[r[2]].invocations += r[3];
+    if (skillCallParts(r).via === 'command') bySkill[r[2]].byCommand += r[3];
+    // A skill that was invoked but whose requests carry no skill tag still
+    // belongs to the session that invoked it.
+    bySkill[r[2]].sessions.add(r[1]);
   });
-  const sorted = Object.entries(bySkill).sort((a,b) => b[1].cost - a[1].cost);
+  const sorted = Object.entries(bySkill).sort((a,b) => b[1].cost - a[1].cost || a[0].localeCompare(b[0]));
   const skillsBody = document.querySelector('#skillsTable tbody');
   if (!sorted.length) { skillsBody.innerHTML = emptyRow(6, 'No skill usage matches the current filters.'); return; }
   skillsBody.innerHTML = sorted.map(([sk,v]) => `
-    <tr><td>${esc(sk)}</td><td class="num">${fmtInt(v.invocations)}</td><td class="num">${fmtInt(v.requests)}</td>
-      <td class="num">${fmtTokens(v.tokens)}</td><td class="num">${fmtCost(v.cost)}</td><td class="num">${v.sessions.size}</td></tr>`).join('');
+    <tr><td>${esc(sk)}</td><td class="num"${v.byCommand ? ` title="${esc(fmtInt(v.invocations - v.byCommand) + ' by Claude through the Skill tool, ' + fmtInt(v.byCommand) + ' by slash command')}"` : ''}>${fmtInt(v.invocations)}</td><td class="num">${fmtInt(v.requests)}</td>
+      <td class="num">${fmtTokens(v.tokens)}</td><td class="num">${fmtCost(v.cost)}</td><td class="num">${fmtInt(v.sessions.size)}</td></tr>`).join('');
 }
 
 // ===================== Tools & errors =====================
+// The server an MCP tool belongs to, tidied so one service isn't split across
+// bars: Claude Code names the same connector "claude_ai_Atlassian",
+// "plugin_atlassian_atlassian" or a bare id, depending on how it was added. A
+// UUID-named connector can't be told by name, so it is labelled by its id.
 function mcpServerOf(name) {
-  if (name.startsWith('mcp__')) { const parts = name.split('__'); return parts[1] || '(mcp)'; }
-  return '(core tools)';
+  if (!name.startsWith('mcp__')) return '(core tools)';
+  const raw = name.split('__')[1] || '(mcp)';
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) return 'connector ' + raw.slice(0, 8);
+  // claude_ai_Atlassian, claude_ai_Atlassian_2 and plugin_atlassian_atlassian are one service
+  return raw.replace(/^claude_ai_/i, '').replace(/^plugin_/i, '').replace(/_\d+$/, '')
+            .replace(/^(.+)_\1$/i, '$1').toLowerCase() || '(mcp)';
 }
 
 function renderTools() {
@@ -1628,14 +1871,30 @@ function renderTools() {
 
   // Ranked by errors, not by rate: a rarely-called tool that failed a few
   // times can't outrank the one behind most of the failures. The bar is the
-  // error count, coloured by rate. Built-in names the model made up (never once
-  // succeeded) are left out and named below; see inventedTool in habits.js.
-  const withErrors = Object.entries(byTool).filter(([,v]) => v.calls >= 10 && v.errors > 0);
-  const invented = withErrors.filter(([name,v]) => inventedTool(name, v));
-  const errorEntries = withErrors.filter(([name,v]) => !inventedTool(name, v))
+  // error count, coloured by rate. A name that isn't in Claude Code's documented tool list and
+  // never once succeeded (made up by the model, or not available) is left out and
+  // named below, and so is an MCP tool name that never worked while its server's
+  // other tools did; see inventedTool and strayMcpTools in habits.js.
+  const stray = strayMcpTools();
+  const MIN_CALLS = 10, TOP = 15;
+  const withErrors = Object.entries(byTool).filter(([,v]) => v.errors > 0);
+  const ranked = withErrors.filter(([,v]) => v.calls >= MIN_CALLS);
+  const invented = ranked.filter(([name,v]) => inventedTool(name, v));
+  const strays = withErrors.filter(([name]) => stray.has(name));
+  const eligible = ranked.filter(([name,v]) => !inventedTool(name, v) && !stray.has(name))
     .map(([name,v]) => [name, v.errors, v.calls, v.errors/v.calls])
-    .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0, 15);
+    .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+  const errorEntries = eligible.slice(0, TOP);
   const allErrors = Object.values(byTool).reduce((s,v) => s + v.errors, 0);
+  const allCalls = Object.values(byTool).reduce((s,v) => s + v.calls, 0);
+  const small = withErrors.filter(([,v]) => v.calls < MIN_CALLS);
+  const smallErrors = small.reduce((n,[,v]) => n + v.errors, 0);
+  const hiddenTop = eligible.slice(TOP);
+  const noErrorsMsg = allCalls ? {
+    title: allErrors ? 'No tool is ranked here' : 'No tool errors in this range',
+    body: allErrors ? `Errors were on tools with fewer than ${MIN_CALLS} calls, or on names left out below.`
+                    : `${fmtInt(allCalls)} tool call${allCalls === 1 ? '' : 's'}, none failed.`,
+  } : null;
   upsertChart('toolErrorRate', 'toolErrorRateChart', {
     type: 'bar',
     data: { labels: errorEntries.map(e=>e[0]), datasets: [{
@@ -1650,15 +1909,30 @@ function renderTools() {
         return `${fmtInt(errors)} errors of ${fmtInt(calls)} calls (${(rate*100).toFixed(1)}%)` +
                (allErrors ? ` · ${(100*errors/allErrors).toFixed(1)}% of all errors` : '');
       } } } } },
-  });
+  }, noErrorsMsg);
   const note = document.getElementById('toolErrorNote');
-  if (note) note.textContent = invented.length
-    ? `Left out: ${invented.map(([name,v]) => `${name} (${fmtInt(v.calls)} calls, none succeeded)`).join(', ')}, ` +
-      `a tool name the model made up rather than a tool to fix.`
-    : '';
+  if (note) note.textContent = [
+    hiddenTop.length
+      ? `Showing the ${TOP} tools with the most errors of ${fmtInt(eligible.length)}; ${fmtInt(hiddenTop.length)} more ` +
+        `(${fmtInt(hiddenTop.reduce((n,e) => n + e[1], 0))} errors) not shown.` : '',
+    small.length
+      ? `${fmtInt(small.length)} tool${small.length === 1 ? '' : 's'} with fewer than ${MIN_CALLS} calls ` +
+        `(${fmtInt(smallErrors)} error${smallErrors === 1 ? '' : 's'}) aren't ranked.` : '',
+    invented.length
+      ? `Left out: ${invented.map(([name,v]) => `${name} (${fmtInt(v.calls)} ${v.calls === 1 ? "call" : "calls"}, none succeeded)`).join(', ')}, ` +
+        `a tool name that isn't in Claude Code's documented tool list and never succeeded (made up by the model, or not available).` : '',
+    strays.length
+      ? `Also left out: ${strays.map(([name,v]) => `${name} (${fmtInt(v.calls)} ${v.calls === 1 ? "call" : "calls"}, none succeeded)`).join(', ')}, ` +
+        `an MCP tool name that never worked while other tools on its server did.` : '',
+  ].filter(Boolean).join(' ');
 
+  // Core tools would drown the integrations (most calls are Read, Bash and
+  // Edit), so the rollup is MCP servers only, with the core total said below.
   const byServer = {};
+  let coreCalls = 0, coreErrors = 0;
   Object.entries(byTool).forEach(([name,v]) => {
+    if (!isMcpTool(name)) { coreCalls += v.calls; coreErrors += v.errors; return; }
+    if (stray.has(name)) return;
     const srv = mcpServerOf(name);
     byServer[srv] = byServer[srv] || {calls:0, errors:0};
     byServer[srv].calls += v.calls; byServer[srv].errors += v.errors;
@@ -1669,14 +1943,22 @@ function renderTools() {
     data: { labels: serverEntries.map(e=>e[0]), datasets: [{ data: serverEntries.map(e=>e[1].calls), backgroundColor: cssVar('--series-solo') }] },
     options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
       scales: { x:{ ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} }, y:{ ticks:{color:cssVar('--text-secondary'),font:{size:11}}, grid:{display:false} } },
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => `${fmtInt(ctx.raw)} calls, ${serverEntries[ctx.dataIndex][1].errors} errors` } } } },
-  });
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => `${fmtInt(ctx.raw)} calls, ${fmtInt(serverEntries[ctx.dataIndex][1].errors)} errors` } } } },
+  }, coreCalls ? { title: 'No MCP tool calls in this range', body: `Only Claude Code's own tools were used (${fmtInt(coreCalls)} calls).` } : null);
+  const mcpNote = document.getElementById('mcpNote');
+  if (mcpNote) mcpNote.textContent = `MCP servers only. Claude Code's own tools (${fmtInt(coreCalls)} calls, ` +
+    `${fmtInt(coreErrors)} errors) are left out so they don't swamp the integrations. Server names are tidied so ` +
+    `one service isn't split by how it was added (a claude_ai_ or plugin_ prefix and a trailing _2 are dropped); a connector named ` +
+    `only by an id shows as "connector" and its first characters, and can't be matched to the same service under its name.`;
 
   const grain = state.grain;
   document.getElementById('grainNoteTools').textContent = 'per ' + grainInfo(grain).noun;
   const weekly = {};
   rows.forEach(r => { const wk = rollup(r[0], grain); weekly[wk] = (weekly[wk]||0) + r[4]; });
   const errAxis = axisFor(grain);
+  const errTotal = rows.reduce((n, r) => n + r[4], 0);
+  const noWeeklyErrors = rows.length && !errTotal
+    ? { title: 'No tool errors in this range', body: `${fmtInt(allCalls)} tool call${allCalls === 1 ? '' : 's'}, none failed.` } : null;
   upsertChart('errorsWeekly', 'errorsWeeklyChart', {
     type: 'bar',
     data: { labels: errAxis.labels, datasets: [{ data: errAxis.keys.map(w=>weekly[w]||0), backgroundColor: cssVar('--critical') }] },
@@ -1686,7 +1968,7 @@ function renderTools() {
         title: ctx => errAxis.titles[ctx[0].dataIndex],
         label: ctx => `${fmtInt(ctx.raw)} error${ctx.raw === 1 ? '' : 's'}`,
       } } } },
-  });
+  }, noWeeklyErrors);
 
   const sorted = Object.entries(byTool).sort((a,b)=>b[1].calls-a[1].calls);
   const toolsBody = document.querySelector('#toolsTable tbody');
@@ -1713,14 +1995,28 @@ function renderAgents() {
   const subTokens = rows.filter(r=>r[4]!==-1).reduce((s,r)=>s+tokenTotal(r),0);
   const mainTokens = rows.filter(r=>r[4]===-1).reduce((s,r)=>s+tokenTotal(r),0);
 
+  // Imputed output (placeholder counts replaced by an estimate) is in the output
+  // share, the token total and the cost; the thinking share is logged thinking
+  // only, so it says so (THINKING_NOTE).
+  const subImputed = rows.filter(r => r[4] !== -1).reduce((s, r) => s + (r[16] || 0), 0);
+  const allImputed = rows.reduce((s, r) => s + (r[16] || 0), 0);
+  const impText = n => n > 0 ? `incl. ${fmtTokens(n)} imputed` : null;
   renderTiles('agentStatTiles', [
-    ['Subagents', fmtInt(agents.length)],
-    ['Subagent tokens', fmtTokens(subTokens)],
-    ['Subagent cost', fmtCost(subCost)],
+    ['Subagents', fmtInt(agents.length), 'started in these dates'],
+    ['Subagent tokens', fmtTokens(subTokens), impText(subImputed), UNLOGGED_CALLS_NOTE],
+    ['Subagent cost', fmtCost(subCost), subImputed > 0 ? 'incl. the imputed output' : null, UNLOGGED_CALLS_NOTE],
     ['Subagent cost share', fmtPct((mainCost+subCost)>0 ? subCost/(mainCost+subCost) : null)],
-    ['Subagent output share', fmtPct(tokenShare(rows, 6)), 'of output tokens'],
-    ['Subagent thinking share', fmtPct(tokenShare(rows, 10)), 'of thinking tokens'],
+    ['Subagent output share', fmtPct(tokenShare(rows, 6)),
+     ['of output tokens', impText(allImputed)].filter(Boolean).join(' · '), UNLOGGED_CALLS_NOTE],
+    ['Subagent thinking share', fmtPct(tokenShare(rows, 10)), 'of logged thinking', THINKING_NOTE],
   ]);
+  const agentsNote = document.getElementById('agentsFootnote');
+  if (agentsNote) agentsNote.textContent =
+    'Tokens and costs are the requests inside the selected dates and models, as on the Overview, and include ' +
+    (allImputed > 0 ? `${fmtTokens(allImputed)} output tokens imputed for responses logged with a placeholder count ` +
+      '(see the note on Total tokens). ' : 'any imputed output. ') +
+    'Subagents are counted by the day they started, so the count and these totals can cover different work; ' +
+    'the table at the bottom gives each subagent\'s whole run on every model.';
 
   const countByType = {}, valByType = {};
   agents.forEach(a => { countByType[a.agent_type] = (countByType[a.agent_type]||0) + 1; });
@@ -1776,10 +2072,22 @@ function renderAgents() {
   });
 
   const agentsBody = document.querySelector('#agentsTable tbody');
-  if (!agents.length) { agentsBody.innerHTML = emptyRow(8, 'No subagents match the current filters.'); return; }
-  agentsBody.innerHTML = agents
-    .sort((a,b) => (b.date||'').localeCompare(a.date||''))
-    .slice(0,500).map(a => `
+  const tableNote = document.getElementById('agentsTableNote');
+  const AGENT_ROWS = 500;
+  if (!agents.length) {
+    agentsBody.innerHTML = emptyRow(8, 'No subagents match the current filters.');
+    if (tableNote) tableNote.textContent = '';
+    return;
+  }
+  // Newest first, with the agent's id to break ties so the order (and which 500
+  // are cut) never depends on the order the rows arrived in.
+  const newest = [...agents].sort((a,b) => (b.date||'').localeCompare(a.date||'') ||
+    String(a.agent_id || '').localeCompare(String(b.agent_id || '')));
+  if (tableNote) tableNote.textContent = (newest.length > AGENT_ROWS
+    ? `Showing the newest ${fmtInt(AGENT_ROWS)} of ${fmtInt(newest.length)} subagents. ` : '') +
+    'Tokens and cost are the whole run, on every model, so they can exceed what the charts count inside these dates and models.';
+  agentsBody.innerHTML = newest
+    .slice(0, AGENT_ROWS).map(a => `
     <tr><td>${esc(a.date||'—')}</td><td>${esc((sessionById[a.session_id]&&sessionById[a.session_id].title)||a.real_session_id||a.session_id)}</td>
       <td>${esc(a.agent_type)}</td><td class="num">${esc(a.spawn_depth)}</td><td>${esc(a.description||'')}</td>
       <td>${esc(a.models.join(', '))}</td><td class="num">${fmtTokens(a.tokens)}</td><td class="num">${fmtCost(a.cost)}</td></tr>`).join('');
@@ -1798,13 +2106,15 @@ function renderSessions() {
     type: 'scatter',
     data: { datasets: [{
       label: 'Sessions',
-      data: rows.map(s => ({ x: s.active_ms/60000, y: s.est_total, label: s.title })),
+      // Both axes are the whole session: the range-filtered cost would sit
+      // against an active time that isn't filtered.
+      data: rows.map(s => ({ x: s.active_ms/60000, y: s.est_whole, label: s.title })),
       backgroundColor: cssVar('--series-solo'),
     }] },
     options: { responsive:true, maintainAspectRatio:false,
       scales: {
-        x: { title:{display:true, text:'Active minutes', color:cssVar('--text-muted')}, ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} },
-        y: { title:{display:true, text:'Est. cost', color:cssVar('--text-muted')}, ticks:{color:cssVar('--text-muted'), callback:v=>fmtCost(v)}, grid:{color:cssVar('--gridline')} },
+        x: { title:{display:true, text:'Active minutes (whole session)', color:cssVar('--text-muted')}, ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} },
+        y: { title:{display:true, text:'Est. cost (whole session)', color:cssVar('--text-muted')}, ticks:{color:cssVar('--text-muted'), callback:v=>fmtCost(v)}, grid:{color:cssVar('--gridline')} },
       },
       plugins: { legend:{display:false}, tooltip:{ callbacks:{ label: ctx => `${ctx.raw.label}: ${Math.round(ctx.raw.x)}m, ${fmtCost(ctx.raw.y)}` } } },
     },
@@ -1813,15 +2123,41 @@ function renderSessions() {
   renderSessionsTable(rows);
   wireSessionSort();
 
+  // Say how many of the listed transcripts are sessions in the totals above:
+  // the Overview counts those that got a reply, and copies not at all.
+  const originals = rows.filter(s => !s.derived);
+  const noReply = originals.filter(s => !didWork(s)).length;
+  const copies = rows.length - originals.length;
+  const caption = document.getElementById('sessionsCaption');
+  if (caption) caption.textContent =
+    `${fmtInt(originals.length - noReply)} session${originals.length - noReply === 1 ? '' : 's'}` +
+    (noReply ? `, plus ${fmtInt(noReply)} transcript${noReply === 1 ? '' : 's'} that never got a reply ` +
+      `(badged "no reply", not counted in the totals above)` : '') +
+    (copies ? `, plus ${fmtInt(copies)} fork/resume cop${copies === 1 ? 'y' : 'ies'}` : '') +
+    '. Cost is inside the selected dates and models; every other column is the whole session.';
+
+  // The toggle counts the copies the current filters would show, not every copy
+  // there is.
   const btn = document.getElementById('forkToggle');
   if (btn) {
-    const n = PAYLOAD.sessions.filter(s => s.derived).length;
-    btn.textContent = state.showForks ? `Hide ${n} fork/resume copies` : `Show ${n} fork/resume copies`;
-    btn.style.display = n ? '' : 'none';
+    const n = PAYLOAD.sessions.filter(s => s.derived && sessionInFilters(s)).length;
+    btn.textContent = state.showForks ? `Hide ${n} fork/resume cop${n === 1 ? 'y' : 'ies'}` : `Show ${n} fork/resume cop${n === 1 ? 'y' : 'ies'}`;
+    btn.style.display = n || state.showForks ? '' : 'none';
     btn.classList.toggle('active', state.showForks);
     btn.onclick = () => { state.showForks = !state.showForks; onFiltersChanged(); };
   }
 }
+
+// What a column sorts on. Project sorts by the label the row shows (not the full
+// path, which orders by a folder the table never displays), and Start by the
+// session's own first record.
+function sessionSortValue(s, key) {
+  if (key === 'project') return shortProjectLabel(s.project);
+  if (key === 'start') return sessionStartTime(s);
+  return s[key];
+}
+// Text columns open ascending (A first); numbers and dates open with the biggest.
+const TEXT_SORT_KEYS = new Set(['title', 'project']);
 
 function sortSessions(rows) {
   const { key, dir } = sessionSort;
@@ -1830,12 +2166,70 @@ function sortSessions(rows) {
   // and the result never depends on the order the rows arrived in.
   const missing = v => v == null || (typeof v === 'number' && Number.isNaN(v));
   return [...rows].sort((a,b) => {
-    const av = a[key], bv = b[key];
+    const av = sessionSortValue(a, key), bv = sessionSortValue(b, key);
     const am = missing(av), bm = missing(bv);
     if (am || bm) return am === bm ? 0 : (am ? 1 : -1);
     if (typeof av === 'string' && typeof bv === 'string') return dir * av.localeCompare(bv);
     return dir * (av < bv ? -1 : av > bv ? 1 : 0);
   });
+}
+
+function toggleSessionDetail(tr, sorted) {
+  const existing = tr.nextElementSibling;
+  if (existing && existing.classList.contains('expand-row')) {
+    existing.remove();
+    tr.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  const s = sorted[parseInt(tr.dataset.idx)];
+  const byModel = {};
+  // Deliberately unfiltered by date: this is the whole session's breakdown,
+  // not just the part inside the current range.
+  PAYLOAD.usage.filter(r => r[1] === s.id).forEach(r => {
+    byModel[r[2]] = byModel[r[2]] || {tokens:0, cost:0};
+    byModel[r[2]].tokens += tokenTotal(r); byModel[r[2]].cost += r[13];
+  });
+  const perModel = Object.entries(byModel)
+    .map(([m,v]) => `${esc(m)}: ${fmtTokens(v.tokens)}, ${fmtCost(v.cost)}`).join(' &middot; ')
+    || 'No usage recorded for this session';
+  let detail = `<div><strong>Whole session, by model:</strong> ${perModel}</div>`;
+  if (s.main_tool_calls != null && s.tool_calls != null) {
+    detail += `<div><strong>Tool calls:</strong> ${fmtInt(s.main_tool_calls)} in the main conversation · ` +
+      `${fmtInt(Math.max(0, s.tool_calls - s.main_tool_calls))} by subagents ` +
+      `(${fmtInt(s.tool_errors)} error${s.tool_errors === 1 ? '' : 's'} in all)</div>`;
+  }
+  if (s.placeholder_responses) {
+    detail += `<div><strong>Imputed output:</strong> ${fmtTokens(s.imputed_output_tokens)} tokens for ` +
+      `${fmtInt(s.placeholder_responses)} subagent response${s.placeholder_responses === 1 ? '' : 's'} ` +
+      `logged with a placeholder count (included above)</div>`;
+  }
+  if (s.est_cost_unlogged != null) {
+    const parts = (s.unlogged_models || []).map(m => `${esc(m.model)}: ${fmtCost(m.cost)}`).join(' &middot; ');
+    detail += `<div><strong>Not in the transcripts:</strong> ${fmtCost(s.est_cost_unlogged)}` +
+      `${parts ? ` (${parts})` : ''} <span class="foot-note">— what Claude Code's counter recorded ` +
+      `beyond the transcripts, at list rates; not included above</span></div>`;
+  }
+  if ((s.cli_models || []).length) {
+    const rows = s.cli_models.map(m => {
+      const gap = m.cli_cost > 0 ? (m.est_cost - m.cli_cost) / m.cli_cost : null;
+      return `<tr><td>${esc(m.model)}</td><td class="num">${fmtCost(m.est_cost)}</td>` +
+             `<td class="num">${fmtCost(m.cli_cost)}</td>` +
+             `<td class="num">${gap==null ? '—' : (gap>0?'+':'') + (gap*100).toFixed(1) + '%'}</td>` +
+             `<td class="num">${m.cli_repriced == null ? '—' : fmtCost(m.cli_repriced)}</td>` +
+             `<td class="num">${fmtTokens(m.est_tokens)}</td><td class="num">${fmtTokens(m.cli_tokens)}</td></tr>`;
+    }).join('');
+    detail += `<div style="margin-top:8px;"><strong>Logged here vs Claude Code's own counter</strong>` +
+      ` <span class="foot-note">(both over the counter's window, from its start to its last snapshot; ` +
+      `"its tokens at list price" (in dollars) re-prices the counter's own tokens at this tool's rates)</span>` +
+      `<table class="data-table mini"><thead><tr><th>Model</th><th class="num">Logged here</th>` +
+      `<th class="num">Claude Code's $</th><th class="num">Δ</th><th class="num">Its tokens at list price ($)</th>` +
+      `<th class="num">Logged tok</th><th class="num">Counted tok</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  const row = document.createElement('tr');
+  row.className = 'expand-row';
+  row.innerHTML = `<td colspan="13">${detail}</td>`;
+  tr.after(row);
+  tr.setAttribute('aria-expanded', 'true');
 }
 
 function renderSessionsTable(rows) {
@@ -1846,109 +2240,80 @@ function renderSessionsTable(rows) {
     return;
   }
   tbody.innerHTML = sorted.map((s,i) => {
-    const diverge = s.cost_diverges ? ' <span class="badge warn" title="The CLI figure restarts at zero when a session is resumed, so a gap on a long session is expected rather than a bug.">Δ&gt;15%</span>' : '';
+    const diverge = s.cost_diverges ? ' <span class="badge warn" title="Over the counter\'s own window, Claude Code\'s cost and this tool\'s estimate differ by more than 15%. The Overview\'s reconciliation table shows the models behind it.">Δ&gt;15%</span>' : '';
     const fork = s.derived ? ' <span class="badge" title="Every request in this transcript also appears in another one — a fork/resume copy, not a separate session.">fork</span>' : '';
-    const prLinks = (s.prs||[]).map(p => `<a href="${safeUrl(p.url)}" target="_blank" rel="noopener">#${esc(p.number)}</a>`).join(' ');
+    const noReply = !s.derived && !didWork(s)
+      ? ' <span class="badge" title="This transcript never got a reply, so it is not counted as a session in the totals above.">no reply</span>' : '';
+    // stopPropagation: following a link must not also open the row.
+    const prLinks = (s.prs||[]).map(p => `<a href="${safeUrl(p.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${esc(p.number)}</a>`).join(' ');
     const linesStr = (s.lines_added!=null) ? `+${fmtInt(s.lines_added)}/-${fmtInt(s.lines_removed)}` : '—';
     // The filters can cut a session down to part of its work; say how much of
     // the whole it is, since the CLI figure beside it is always whole-session.
     const partial = Math.abs(s.est_whole - s.est_total) >= 0.005
       ? `<div class="foot-note" style="margin:0" title="Whole session, every model">of ${fmtCost(s.est_whole)}</div>` : '';
-    return `<tr class="expandable" data-idx="${i}">
-      <td>${esc(s.title)}${fork}</td><td>${esc(shortProjectLabel(s.project))}</td><td title="${esc(viewerZoneNote())}">${esc(s.start ? new Date(s.start).toLocaleString() : '—')}</td>
+    const start = sessionStartTime(s);
+    return `<tr class="expandable" data-idx="${i}" tabindex="0" aria-expanded="false">
+      <td>${esc(s.title)}${fork}${noReply}</td><td>${esc(shortProjectLabel(s.project))}</td><td title="${esc(viewerZoneNote())}">${esc(start ? new Date(start).toLocaleString() : '—')}</td>
       <td class="num">${fmtDuration(s.active_ms)}</td><td>${esc(s.models.join(', '))}</td><td class="num">${fmtInt(s.requests)}</td>
       <td class="num">${fmtCost(s.est_total)}${partial}</td><td class="num">${s.cli_cost!=null?fmtCost(s.cli_cost):cliElsewhere(s)}${diverge}</td>
-      <td class="num">${esc(s.n_subagents)}</td><td class="num">${esc(s.tool_calls)} (${esc(s.tool_errors)} err)</td>
+      <td class="num">${fmtInt(s.n_subagents)}</td><td class="num">${fmtInt(s.tool_calls)} (${fmtInt(s.tool_errors)} err)</td>
       <td class="num">${linesStr}</td><td>${prLinks}</td><td class="habit-tags">${tagsHtml(sessionHabitTags(s))}</td></tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr.expandable').forEach(tr => {
-    tr.addEventListener('click', () => {
-      const existing = tr.nextElementSibling;
-      if (existing && existing.classList.contains('expand-row')) { existing.remove(); return; }
-      const s = sorted[parseInt(tr.dataset.idx)];
-      const byModel = {};
-      // Deliberately unfiltered by date: this is the whole session's breakdown,
-      // not just the part inside the current range.
-      PAYLOAD.usage.filter(r => r[1] === s.id).forEach(r => {
-        byModel[r[2]] = byModel[r[2]] || {tokens:0, cost:0};
-        byModel[r[2]].tokens += tokenTotal(r); byModel[r[2]].cost += r[13];
-      });
-      const perModel = Object.entries(byModel)
-        .map(([m,v]) => `${esc(m)}: ${fmtTokens(v.tokens)}, ${fmtCost(v.cost)}`).join(' &middot; ')
-        || 'No usage recorded for this session';
-      let detail = `<div><strong>Whole session, by model:</strong> ${perModel}</div>`;
-      if (s.placeholder_responses) {
-        detail += `<div><strong>Imputed output:</strong> ${fmtTokens(s.imputed_output_tokens)} tokens for ` +
-          `${fmtInt(s.placeholder_responses)} subagent response${s.placeholder_responses === 1 ? '' : 's'} ` +
-          `logged with a placeholder count (included above)</div>`;
-      }
-      if (s.est_cost_unlogged != null) {
-        const parts = (s.unlogged_models || []).map(m => `${esc(m.model)}: ${fmtCost(m.cost)}`).join(' &middot; ');
-        detail += `<div><strong>Not in the transcripts:</strong> ${fmtCost(s.est_cost_unlogged)}` +
-          `${parts ? ` (${parts})` : ''} <span class="foot-note">— what Claude Code's counter recorded ` +
-          `beyond the transcripts, at list rates; not included above</span></div>`;
-      }
-      if ((s.cli_models || []).length) {
-        const rows = s.cli_models.map(m => {
-          const gap = m.cli_cost > 0 ? (m.est_cost - m.cli_cost) / m.cli_cost : null;
-          return `<tr><td>${esc(m.model)}</td><td class="num">${fmtCost(m.est_cost)}</td>` +
-                 `<td class="num">${fmtCost(m.cli_cost)}</td>` +
-                 `<td class="num">${gap==null ? '—' : (gap>0?'+':'') + (gap*100).toFixed(1) + '%'}</td>` +
-                 `<td class="num">${m.cli_repriced == null ? '—' : fmtCost(m.cli_repriced)}</td>` +
-                 `<td class="num">${fmtTokens(m.est_tokens)}</td><td class="num">${fmtTokens(m.cli_tokens)}</td></tr>`;
-        }).join('');
-        detail += `<div style="margin-top:8px;"><strong>Logged here vs Claude Code's own counter</strong>` +
-          ` <span class="foot-note">(both over the counter's window, from its start to its last snapshot; ` +
-          `"its tokens at list price" re-prices the counter's own tokens at this tool's rates)</span>` +
-          `<table class="data-table mini"><thead><tr><th>Model</th><th class="num">Logged here</th>` +
-          `<th class="num">Claude Code's $</th><th class="num">Δ</th><th class="num">Its tokens at list price</th>` +
-          `<th class="num">Logged tok</th><th class="num">Counted tok</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-      }
-      const row = document.createElement('tr');
-      row.className = 'expand-row';
-      row.innerHTML = `<td colspan="13">${detail}</td>`;
-      tr.after(row);
+    tr.addEventListener('click', () => toggleSessionDetail(tr, sorted));
+    // The row is a button for keyboard users: Enter or Space opens it.
+    tr.addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target === tr) { e.preventDefault(); toggleSessionDetail(tr, sorted); }
     });
   });
 }
 
 function wireSessionSort() {
   document.querySelectorAll('#sessionsTable th[data-sort]').forEach(th => {
-    th.classList.toggle('sorted', th.dataset.sort === sessionSort.key);
-    th.onclick = () => {
-      const key = th.dataset.sort;
-      sessionSort.dir = (sessionSort.key === key) ? -sessionSort.dir : -1;
+    const key = th.dataset.sort;
+    const active = key === sessionSort.key;
+    th.classList.toggle('sorted', active);
+    th.classList.toggle('sorted-asc', active && sessionSort.dir === 1);
+    th.setAttribute('aria-sort', active ? (sessionSort.dir === 1 ? 'ascending' : 'descending') : 'none');
+    th.setAttribute('tabindex', '0');
+    const sort = () => {
+      // The same column flips; a new one opens in its natural direction.
+      sessionSort.dir = (sessionSort.key === key) ? -sessionSort.dir : (TEXT_SORT_KEYS.has(key) ? 1 : -1);
       sessionSort.key = key;
       renderSessionsTable(sessionRowsWithCost());
       wireSessionSort();
     };
+    th.onclick = sort;
+    th.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort(); } };
   });
 }
 
 // ===================== Output & env =====================
 function renderEnv() {
-  const rows = sessionRows();
-  // The CLI's line counter is a running total for the whole session, so the
-  // tile sums its steps inside the range rather than each session's final
-  // figure -- a six-week session would otherwise count in full in any range it
-  // touched. Rows: [bucket, session_id, added, removed].
-  const allLines = PAYLOAD.lines || [];
-  const lineRows = allLines.filter(r => inDateRange(r[0]) && sessionOk(r[1]));
+  // The sessions counted here are the ones the header counts: originals that got
+  // a reply. The Sessions tab's fork toggle and its no-reply transcripts don't
+  // move these charts.
+  const rows = countedSessions();
+  // Lines changed are counted per edit (Edit, Write and the like), dated by the
+  // edit itself, so the tile sums the edits inside the range and a long session
+  // counts only its work there. Rows: [bucket, session_id, added, removed].
+  // They aren't recorded per model, so a model filter can't split them; the
+  // tiles say so rather than quietly using a session-level rule.
+  const lineRows = (PAYLOAD.lines || []).filter(r => inDateRange(r[0]) && projectOk(projectOf(r[1])));
   const linesAdded = lineRows.reduce((s,r)=>s+r[2],0);
   const linesRemoved = lineRows.reduce((s,r)=>s+r[3],0);
-  const lineSessions = new Set(lineRows.map(r => r[1])).size;
-  const firstLines = allLines.reduce((min, r) => { const d = dayOf(r[0]); return !min || d < min ? d : min; }, null);
-  // Only sessions with a cost-state entry report line counts, so the tile
-  // says how many contributed, and when the range starts before any were kept.
-  const linesSub = `from ${lineSessions} of ${rows.length} sessions` +
-    (firstLines && state.from < firstLines ? ` · recorded from ${prettyDate(firstLines)}` : '');
+  const modelFiltered = state.models.length > 0;
+  const notByModel = 'all models: not recorded per model';
   const prs = prRows().sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   renderTiles('envStatTiles', [
-    ['Lines added', `+${fmtInt(linesAdded)}`, linesSub],
-    ['Lines removed', `-${fmtInt(linesRemoved)}`],
-    ['Pull requests', fmtInt(prs.length)],
+    ['Lines added', `+${fmtInt(linesAdded)}`,
+     modelFiltered ? notByModel : 'from the edits Claude made in these dates',
+     'Counted from the line changes in each Edit and Write result, dated when the edit was made: only the two ' +
+     'numbers are kept, never the text. A session that made no edits has none.'],
+    ['Lines removed', `-${fmtInt(linesRemoved)}`, modelFiltered ? notByModel : null],
+    ['Pull requests', fmtInt(prs.length), modelFiltered ? notByModel : null],
   ]);
 
   const prsBody = document.querySelector('#prsTable tbody');
@@ -1973,19 +2338,29 @@ function renderEnv() {
       plugins:{legend:{display:false}} },
   });
 
-  const versionWeekly = {};
-  rows.forEach(s => {
-    const wk = weekOf(sessionStartDay(s));
+  // One bar per week of the range, empty weeks included, each session in the week
+  // it started (clamped into the range, so a session that began before it doesn't
+  // add a week the axis doesn't show). A session counts under the version it ran
+  // most; the legend lists the versions actually plotted, the seven most common,
+  // with the rest as "Other".
+  const dominantVersion = s => {
     const versions = Object.keys(s.versions || {});
-    const v = versions.length ? versions.sort((a,b)=>(s.versions[b]-s.versions[a]))[0] : '(unknown)';
+    return versions.length ? versions.sort((a,b)=>(s.versions[b]-s.versions[a]) || a.localeCompare(b))[0] : '(unknown)';
+  };
+  const clampDay = d => d < state.from ? state.from : d > state.to ? state.to : d;
+  const versionWeekly = {}, plotted = {};
+  rows.forEach(s => {
+    const wk = weekOf(clampDay(sessionStartDay(s)));
+    const v = dominantVersion(s);
     versionWeekly[wk] = versionWeekly[wk] || {};
     versionWeekly[wk][v] = (versionWeekly[wk][v]||0) + 1;
+    plotted[v] = (plotted[v]||0) + 1;
   });
-  const allVersions = {};
-  rows.forEach(s => Object.keys(s.versions||{}).forEach(v => allVersions[v] = (allVersions[v]||0)+1));
-  const top7v = Object.entries(allVersions).sort((a,b)=>b[1]-a[1]).slice(0,7).map(e=>e[0]);
-  const vkLabels = Object.keys(versionWeekly).sort();
-  const vSeries = [...top7v, 'Other'];
+  const top7v = Object.entries(plotted).sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,7).map(e=>e[0]);
+  const vAxis = axisFor(10080);
+  const vkLabels = vAxis.keys;
+  const hasOtherVersion = Object.keys(plotted).some(v => !top7v.includes(v));
+  const vSeries = hasOtherVersion ? [...top7v, 'Other'] : top7v;
   upsertChart('versions', 'versionsChart', {
     type:'bar',
     data:{ labels:vkLabels, datasets: vSeries.map((v,i) => ({
@@ -1998,7 +2373,8 @@ function renderEnv() {
     })) },
     options:{ responsive:true, maintainAspectRatio:false,
       scales:{ x:{stacked:true, ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')}}, y:{stacked:true, ticks:{color:cssVar('--text-muted'), precision:0}, grid:{color:cssVar('--gridline')}} },
-      plugins:{ legend:{position:'top', labels:{color:cssVar('--text-secondary'), boxWidth:10, font:{size:10}}} } },
+      plugins:{ legend:{position:'top', labels:{color:cssVar('--text-secondary'), boxWidth:10, font:{size:10}}},
+        tooltip:{ callbacks:{ title: ctx => vAxis.titles[ctx[0].dataIndex] } } } },
   });
 
   // Branch cost is keyed by project *and* branch. Keying on the branch name
@@ -2042,7 +2418,7 @@ function renderEnv() {
   rows.forEach(s => Object.keys(s.permission_modes||{}).forEach(m => modeCounts[m] = (modeCounts[m]||0)+1));
   const modeEntries = Object.entries(modeCounts).sort((a,b)=>b[1]-a[1]);
   upsertChart('permissionMode', 'permissionModeChart', {
-    type:'bar', data:{ labels:modeEntries.map(e=>e[0]), datasets:[{ data:modeEntries.map(e=>e[1]), backgroundColor:cssVar('--series-solo') }] },
+    type:'bar', data:{ labels:modeEntries.map(e=>MODE_LABELS[e[0]] || e[0]), datasets:[{ data:modeEntries.map(e=>e[1]), backgroundColor:cssVar('--series-solo') }] },
     options:{ responsive:true, maintainAspectRatio:false,
       // Session counts: precision 0 keeps a small axis from reading 0, 1, 1, 2, 2.
       scales:{ x:{ ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} }, y:{ ticks:{color:cssVar('--text-muted'), precision:0}, grid:{color:cssVar('--gridline')} } },

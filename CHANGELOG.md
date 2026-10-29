@@ -6,7 +6,67 @@ records it in its `tool_version` column.
 
 ## Unreleased
 
-## 1.0.2 — 2026-10-29
+## 1.1.0 — 2026-10-30
+
+A full adversarial review of every tab of both dashboards, the export and the
+merge, before the public release: 108 findings, all fixed or, where the logs
+can't settle them, documented. Every fix has a test.
+
+**Changed how things are counted**
+- Lines added/removed are counted from each edit Claude made (its diff, counted
+  in memory; only the two numbers are kept) and dated by the edit. Claude Code's
+  session line counter, which had no time and was written mostly when a session
+  closed, is no longer used.
+- Permission modes come from the mode recorded with each prompt; the `mode`
+  records the chart used (always "normal") are ignored.
+- Refused tool calls (auto mode, a permission rule, you) are no longer counted as
+  tool errors or in error runs.
+- A tool name is called "made up or unavailable" only when it never succeeded,
+  isn't an MCP tool and isn't one of Claude Code's built-in tools. A real tool
+  that fails every time is always shown.
+- Shell checks are recognised in loops, with the interpreter in a variable, with
+  `VAR=$(…)` in front, after a long command, and for many more runners; a quoted
+  `;` no longer splits a command. Edits to scratch files outside the project
+  aren't "code edits" for the checked-after-edit habit.
+- Skills started with a slash command count as invocations; errored Skill calls
+  don't. A subagent copied under two sessions counts once.
+- PRs are dated and attributed by their first link.
+- A cache rebuild right after a compaction isn't a cache miss.
+- The Tools tab and skill calls follow the model filter by the model that made
+  each call.
+- Export schema 13: lines per edit; `tool_calls` include subagents, with new
+  `main_tool_calls`; an export from a machine with no logs covers 30 days.
+
+**Individual dashboard**
+- Every tab says what it counts: whole-session vs in-range columns, imputed and
+  logged-only figures, top-N truncation with what's not shown, sessions that
+  never got a reply, and which sessions a habit figure counts.
+- Habits: "Tool calls per prompt" (main conversation) against Anthropic's line;
+  checks are labelled as shell checks; "not recorded" only when no session worked.
+- Sessions: the Δ badge compares like with like; empty counters show no CLI cost.
+- Filters are kept in the address; the quick ranges say what they cover; charts
+  follow the system's light/dark theme.
+
+**Found by a second, independent re-check, and fixed**
+- Subagent edits, whose results carry no diff, are counted from the edit's own
+  old and new text, in memory (only the two numbers are kept). A Write over an
+  existing file counts the whole new file as added, so rewrites read high.
+- Slash-command skill invocations are found in Claude Code's real record shape.
+- Edits inside Claude Code worktrees count as code edits.
+- The export's lines follow the week of each edit, matching the dashboard.
+- Two command patterns that could take exponential time on adversarial input
+  are linear now.
+
+**Team dashboard and merge**
+- Spend per active day is a range for people with two machines, and the finding
+  only fires when it's over $30 at the most days.
+- Seat prices must be in USD. Week pieces exported separately add up. Gaps
+  between exports are shown, not counted as idle or as $0. Stale exports, on-pace
+  snapshots and skipped files are reported accurately in the merge report.
+- Failing integrations are one finding; friction lists who hit the errors.
+- Output per person compares like with like (sessions started in the weeks).
+
+## 1.0.2 — 2026-10-29 (not released separately; included in 1.1.0)
 
 Every figure on the Overview tab was recomputed from raw logs by independent
 code, and every claim checked against Anthropic's sources. This release fixes

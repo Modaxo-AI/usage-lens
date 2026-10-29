@@ -380,7 +380,7 @@ def _dedupe_requests_across_files(main_facts: list, sub_facts: list):
     return list(winners.values()), owned_by_path, ordered
 
 
-def _session_activity(ordered: list) -> dict:
+def _session_activity(ordered: list, derived=frozenset()) -> dict:
     """{session key: (active_ms, active_start)} for every main transcript.
 
     A fork or resume starts with a byte-copy of the original's records, uuids
@@ -395,14 +395,21 @@ def _session_activity(ordered: list) -> dict:
 
     Only an earlier *file's* uuids make a record a copy, so a uuid repeated
     inside one file still counts, and a record with no uuid can't be matched
-    and stays in its own file. Subagent transcripts are not sessions here."""
+    and stays in its own file -- except in a fork or resume copy (`derived`),
+    which holds the original's history verbatim: there a record counts only if
+    it has a uuid no earlier file holds, so the copy's uuid-less bookkeeping
+    records (queue operations and the like) don't give it active time of its
+    own. Subagent transcripts are not sessions here."""
     seen = set()
     out = {}
     for sid, facts in ordered:
         if facts.kind != "main":
             continue
         activity = getattr(facts, "activity", None) or []
-        kept = [uuid is None or uuid not in seen for uuid, _ in activity]
+        if sid in derived:
+            kept = [uuid is not None and uuid not in seen for uuid, _ in activity]
+        else:
+            kept = [uuid is None or uuid not in seen for uuid, _ in activity]
         seen.update(uuid for uuid, _ in activity if uuid is not None)
         out[sid] = (active_ms_of((ts for _, ts in activity), kept),
                     min((ts for (_, ts), k in zip(activity, kept) if k), default=None))
@@ -568,7 +575,7 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
 
     # Hourly buckets: a habits panel reads days and weeks, and the finer
     # 5-minute grid would triple the payload for no visible difference.
-    session_activity = _session_activity(ordered)
+    session_activity = _session_activity(ordered, derived_sessions)
 
     health, session_health = health_mod.build(
         main_facts, sub_facts, derived_sessions, priced_winners,
@@ -577,7 +584,15 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     # ---- Tools (main + sub) ----
     tool_rows_map = defaultdict(lambda: {"calls": 0, "errors": 0})
     skill_call_map = defaultdict(int)
-    session_main_tool_totals = defaultdict(lambda: {"calls": 0, "errors": 0})
+    session_tool_totals = defaultdict(lambda: {"calls": 0, "errors": 0})       # main + subagents
+    session_main_tool_totals = defaultdict(lambda: {"calls": 0, "errors": 0})  # main thread only
+    # The skills this log set knows: any that a response was attributed to or a
+    # Skill call named. A slash command counts as starting a skill only when it
+    # names one of these (/model, /compact and the like are not skills).
+    known_skills = {r["skill"] for _s, facts in main_facts + sub_facts for r in facts.requests
+                    if r.get("skill")}
+    known_skills.update(inv["skill"] for _s, facts in main_facts + sub_facts
+                        for inv in facts.skill_invocations)
     # A fork/resume copy repeats the original's tool calls, and the same subagent
     # transcript can appear under two parent sessions. tool_use_ids are globally
     # unique, so the first file to claim one wins and later repeats are skipped.
@@ -585,10 +600,14 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     # lands on the session that owns the requests rather than on a copy of it.
     seen_tool_ids = set()
     seen_skill_ids = set()  # Skill calls are tool calls: the same rule applies
+    seen_edit_ids = set()
+    session_edit_lines = {}  # session -> [lines added, lines removed], from its edits
+    line_buckets = defaultdict(lambda: [0, 0])
     for sid, facts in ordered:
         is_sub = facts.kind != "main"
         fallback_date = _local_bucket(facts.first_ts, tz=tz)
         tool_ts = getattr(facts, "tool_ts", None) or {}
+        tool_models = getattr(facts, "tool_models", None) or {}
 
         def _record(tuid, name, is_error):
             if tuid in seen_tool_ids:
@@ -598,15 +617,21 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             # sessions routinely span days, and a session-start date would pile a
             # month of tool calls onto day one.
             date = _local_bucket(tool_ts.get(tuid), tz=tz) or fallback_date
-            key = (date, sid, name, is_sub)
+            # The model of the response that made the call, spelled as the usage
+            # rows spell it, so the model filter can keep just those calls.
+            key = (date, sid, name, is_sub, tool_models.get(tuid))
             tool_rows_map[key]["calls"] += 1
+            totals = [session_tool_totals[sid]]
+            if not is_sub:
+                totals.append(session_main_tool_totals[sid])
+            for total in totals:
+                total["calls"] += 1
             if is_error:
                 tool_rows_map[key]["errors"] += 1
-            if not is_sub:
-                session_main_tool_totals[sid]["calls"] += 1
-                if is_error:
-                    session_main_tool_totals[sid]["errors"] += 1
+                for total in totals:
+                    total["errors"] += 1
 
+        # A refused call (the parser keeps it apart) is a call, never an error.
         for tuid, name in facts.tool_calls.items():
             tool_set.add(name)
             _record(tuid, name, bool(facts.tool_errors.get(tuid)))
@@ -614,21 +639,74 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             if tuid not in facts.tool_calls:
                 tool_set.add("(unknown)")
                 _record(tuid, "(unknown)", is_error)
+        refused_here = set(getattr(facts, "tool_refused", None) or ())
         for s in facts.skill_invocations:
+            # A Skill call that failed, or was refused, never started the skill:
+            # not an invocation (it would be a row with no requests).
+            if s.get("id") and (facts.tool_errors.get(s["id"]) or s["id"] in refused_here):
+                continue
             if s.get("id"):
                 if s["id"] in seen_skill_ids:
                     continue
                 seen_skill_ids.add(s["id"])
-            skill_call_map[(_local_bucket(s["ts"], tz=tz) or fallback_date, sid, s["skill"])] += 1
+            skill_call_map[(_local_bucket(s["ts"], tz=tz) or fallback_date, sid, s["skill"],
+                            s.get("model"), "tool")] += 1
             skill_set.add(s["skill"])
+        # Skills started by a slash command (`/next-task`), counted once per
+        # record uuid across fork copies.
+        for c in getattr(facts, "command_invocations", None) or []:
+            if c["name"] not in known_skills:
+                continue
+            if c.get("id"):
+                if ("cmd", c["id"]) in seen_skill_ids:
+                    continue
+                seen_skill_ids.add(("cmd", c["id"]))
+            skill_call_map[(_local_bucket(c["ts"], tz=tz) or fallback_date, sid, c["name"],
+                            c.get("model"), "command")] += 1
+        # Lines added and removed, per edit and dated by the edit, from the diff
+        # in the edit's own result; an edit repeated by a copy counts once.
+        for tuid, ets, added, removed in getattr(facts, "edit_lines", None) or []:
+            if tuid in seen_edit_ids:
+                continue
+            seen_edit_ids.add(tuid)
+            acc = session_edit_lines.setdefault(sid, [0, 0])
+            acc[0] += _tok(added)
+            acc[1] += _tok(removed)
+            if added or removed:
+                cell = line_buckets[(_local_bucket(ets, tz=tz) or fallback_date, sid)]
+                cell[0] += _tok(added)
+                cell[1] += _tok(removed)
 
-    tools_rows = [[d, sid, name, v["calls"], v["errors"], is_sub]
-                  for (d, sid, name, is_sub), v in tool_rows_map.items()]
-    skill_calls_rows = [[d, sid, skill, n] for (d, sid, skill), n in skill_call_map.items()]
+    # [date, session, tool, calls, errors, is_sub, model]; model is the model of
+    # the response that made the call (None when unknown). Errors exclude
+    # refused calls.
+    tools_rows = [[d, sid, name, v["calls"], v["errors"], is_sub, model]
+                  for (d, sid, name, is_sub, model), v in tool_rows_map.items()]
+    # [date, session, skill, calls, model, via]; via is "tool" (a Skill tool call)
+    # or "command" (a slash command that started the skill); model is the model
+    # of the response that made the call or answered the command.
+    skill_calls_rows = [[d, sid, skill, n, model, via]
+                        for (d, sid, skill, model, via), n in skill_call_map.items()]
+    # [bucket, session, lines added, lines removed], one row per bucket and session.
+    lines_rows = [[bucket, sid, v[0], v[1]] for (bucket, sid), v in sorted(
+        line_buckets.items(), key=lambda kv: (kv[0][0] or "", kv[0][1]))]
 
     # ---- Agents ----
-    agents_rows = []
+    # The same subagent transcript can be copied under two parent sessions: it is
+    # one subagent. The copy whose requests the dedupe kept stands for it.
+    unique_agents, agent_slot = [], {}
     for a in sub_agents:
+        agent_id = a.get("agent_id")
+        if not agent_id:
+            unique_agents.append(a)
+        elif agent_id not in agent_slot:
+            agent_slot[agent_id] = len(unique_agents)
+            unique_agents.append(a)
+        elif (agent_requests.get(a["facts"].path, 0)
+              > agent_requests.get(unique_agents[agent_slot[agent_id]]["facts"].path, 0)):
+            unique_agents[agent_slot[agent_id]] = a
+    agents_rows = []
+    for a in unique_agents:
         facts = a["facts"]
         meta = a.get("meta") or {}
         path = facts.path
@@ -651,36 +729,66 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         agent_type_set.add(meta.get("agent_type", "unknown"))
 
     # ---- PRs (deduped by URL) ----
-    prs_by_url = {}
-    pr_ts = {}
-    # `ordered` puts the owning session first; the first claim on a URL stands.
-    for sid, facts in ordered:
+    # Every pr-link record is a link of its session to a PR. A PR is dated, and
+    # attributed in `payload.prs`, by its earliest link; `ordered` puts the
+    # owning session first, so a fork copy that repeats the link (same time)
+    # loses the tie. Each session lists every PR it linked.
+    pr_first = {}   # url -> (timestamp or "", rank, session, link)
+    session_links = defaultdict(dict)  # session -> {url: link}
+    for rank, (sid, facts) in enumerate(ordered):
         if facts.kind != "main":
             continue
         for pr in facts.pr_links:
             if not _sid(pr.get("prUrl")):
                 continue
-            pr = {**pr, "timestamp": _sid(pr.get("timestamp")),
-                  "prRepository": _sid(pr.get("prRepository"))}
-            # A fork/resume copy repeats the original's pr-link entries, so the
-            # same URL can arrive from several transcripts; the owner got there
-            # first.
-            if pr["prUrl"] in prs_by_url:
-                continue
-            prs_by_url[pr["prUrl"]] = {
-                "session_id": sid,
-                "real_session_id": main_sessions[sid].get("session_id") or sid,
-                "date": _local_date(pr["timestamp"], tz),
-                "repo": pr["prRepository"], "number": pr["prNumber"], "url": pr["prUrl"],
-            }
-            pr_ts[pr["prUrl"]] = pr["timestamp"] or ""
-    # Newest first, by the time each was opened, so same-day PRs keep their order.
-    prs_rows = sorted(prs_by_url.values(), key=lambda r: pr_ts[r["url"]], reverse=True)
-    prs_by_session = defaultdict(list)
-    for pr in prs_rows:
-        prs_by_session[pr["session_id"]].append(pr)
+            link = {**pr, "timestamp": _sid(pr.get("timestamp")),
+                    "prRepository": _sid(pr.get("prRepository"))}
+            session_links[sid].setdefault(link["prUrl"], link)
+            # A link with no time sorts after any that has one.
+            order = (link["timestamp"] or "~", rank)
+            if link["prUrl"] not in pr_first or order < pr_first[link["prUrl"]][:2]:
+                pr_first[link["prUrl"]] = (*order, sid, link)
 
-    subagents_by_session = Counter(a["session_id"] for a in sub_agents)
+    def _pr_row(link, owner):
+        return {
+            "session_id": owner,
+            "real_session_id": main_sessions[owner].get("session_id") or owner,
+            "date": _local_date(link["timestamp"], tz),
+            "repo": link["prRepository"], "number": link["prNumber"], "url": link["prUrl"],
+        }
+    prs_by_url = {url: _pr_row(link, owner)
+                  for url, (_ts, _rank, owner, link) in pr_first.items()}
+    # Newest first, by the time each was opened, so same-day PRs keep their order.
+    prs_rows = sorted(prs_by_url.values(), key=lambda r: pr_first[r["url"]][0].replace("~", ""),
+                      reverse=True)
+    # What a session lists is every PR it linked; each entry is the PR's own row,
+    # whose session_id names the session it is attributed to.
+    # A link is a copy when another transcript that started earlier holds the
+    # same record (the same PR at the same instant): a fork or resume repeats its
+    # parent's records. A link written before a transcript's own first record is
+    # not proof of that -- a session can link a PR some other session also linked
+    # at a different time -- so only the same (PR, time) counts. When no other
+    # session holds it, the link is the session's own.
+    holders = defaultdict(list)  # (url, timestamp) -> [(file start, rank, session)]
+    for rank, (sid, facts) in enumerate(ordered):
+        if facts.kind != "main":
+            continue
+        for url, link in session_links.get(sid, {}).items():
+            if link["timestamp"]:
+                holders[(url, link["timestamp"])].append((facts.first_ts or "~", rank, sid))
+    prs_by_session = {}
+    for sid, links in session_links.items():
+        mine = {}
+        for url, link in links.items():
+            if link["timestamp"]:
+                others = [h for h in holders[(url, link["timestamp"])] if h[2] != sid]
+                started = next(h for h in holders[(url, link["timestamp"])] if h[2] == sid)[:2]
+                if any(h[:2] < started for h in others):
+                    continue
+            mine[url] = prs_by_url[url]
+        prs_by_session[sid] = list(mine.values())
+
+    subagents_by_session = Counter(a["session_id"] for a in unique_agents)
 
     # ---- CLI counters -------------------------------------------------- #
     # The CLI's cost-state is a running counter, identified by its startTime. A
@@ -700,6 +808,12 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         if not states:
             continue
         best_states[sid] = max(states, key=lambda cs: _num(cs["totalCostUSD"]))
+        # A counter that never recorded any cost, on a session that made
+        # requests, is an empty one written when the session was reopened: it
+        # measured nothing, so showing it ("CLI $0.00") would be false.
+        if _num(best_states[sid]["totalCostUSD"]) <= 0 and info["facts"].requests:
+            del best_states[sid]
+            continue
         counters[_counter_key(best_states[sid].get("startTime")) or ("session", sid)].append(sid)
     counter_of = {}
     for members in counters.values():
@@ -709,25 +823,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
                  "states": [cs for m in members for cs in main_sessions[m]["facts"].cost_states]}
         for m in members:
             counter_of[m] = group
-
-    # Lines added/removed are running totals for the whole counter, so a
-    # session's final figure says nothing about *when* the lines were written.
-    # Each rise in the counter is put on the time it was recorded, on the
-    # session that shows the counter; the steps add up to its final figure.
-    # [bucket, session_id, lines_added, lines_removed]
-    lines_rows = []
-    for group in {id(g): g for g in counter_of.values()}.values():
-        owner = group["owner"]
-        fallback = main_sessions[owner]["facts"].first_ts
-        top_added = top_removed = 0
-        for cs in sorted(group["states"], key=lambda cs: (cs.get("ts") or fallback or "",
-                                                          _tok(cs["totalLinesAdded"]))):
-            added = max(0, _tok(cs["totalLinesAdded"]) - top_added)
-            removed = max(0, _tok(cs["totalLinesRemoved"]) - top_removed)
-            top_added += added
-            top_removed += removed
-            if added or removed:
-                lines_rows.append([_local_bucket(cs.get("ts") or fallback, tz=tz), owner, added, removed])
 
     # ---- Sessions table ----
     sessions_rows = []
@@ -746,8 +841,10 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         members = group["members"] if owns_counter else [sid]
         cli_cost = _num(best_state["totalCostUSD"]) if best_state else None
         cli_models = (best_state or {}).get("modelUsage") or {}
-        lines_added = max((_tok(cs["totalLinesAdded"]) for cs in states), default=None)
-        lines_removed = max((_tok(cs["totalLinesRemoved"]) for cs in states), default=None)
+        # Lines changed come from the session's own edits (see the tools loop),
+        # not from the counter, which has no time and may cover only part of the
+        # session. None when it made no edit.
+        lines_added, lines_removed = session_edit_lines.get(sid, (None, None))
         api_ms = max((_ms(cs["totalAPIDuration"]) for cs in states), default=None)
         tool_ms = max((_ms(cs["totalToolDuration"]) for cs in states), default=None)
 
@@ -755,10 +852,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         title = facts.custom_title or facts.ai_title or facts.agent_name or real_id
         est_main = round(session_cost.get(sid, 0.0), 6)
         est_sub = round(session_sub_cost.get(sid, 0.0), 6)
-        counter_est = sum(_est(m) for m in members)
-        diff_flag = None
-        if cli_cost is not None and counter_est > 0:
-            diff_flag = abs(cli_cost - counter_est) / counter_est > 0.15
 
         # Per-model estimate vs the CLI's own modelUsage, for the models the CLI
         # reported on. Only sessions carrying modelUsage contribute.
@@ -787,10 +880,17 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         # life, set a counter's window against a longer one.
         held = set()
         est_by_model = {}
-        if best_state and cli_by_model:
+        if best_state:
             held = set().union(*(session_held.get(m, ()) for m in members))
             est_by_model = _logged_in_window(
                 [winner_by_key[k] for k in held], best_state, unknown_models)
+        # The badge compares the counter with what the transcripts logged *in the
+        # counter's own window* (its start to its last snapshot), not with the
+        # whole session: a counter restarted at a resume only saw part of it.
+        window_est = sum(v["cost"] for v in est_by_model.values())
+        diff_flag = None
+        if cli_cost and window_est > 0:
+            diff_flag = abs(cli_cost - window_est) / window_est > 0.15
 
         model_rows = []
         for model, cli in cli_by_model.items():
@@ -852,6 +952,8 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             "est_cost_sub": est_sub,
             "cli_cost": cli_cost,
             "cli_models": model_rows,
+            # True when the counter's cost is more than 15% from the transcripts'
+            # estimate over the counter's own window; None without a counter.
             "cost_diverges": diff_flag,
             # Calls the counter recorded and the transcripts did not, priced at
             # this tool's rates; kept apart from est_cost_main/est_cost_sub.
@@ -865,11 +967,25 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             "cli_counted_in": group["owner"] if group and not owns_counter else None,
             "lines_added": lines_added,
             "lines_removed": lines_removed,
+            "lines_source": "edits",
+            # The days the shared CLI counter covers: the earliest start and latest
+            # end of every transcript on it (owner only), for filtering the
+            # reconciliation by all of them.
+            "cli_counter_start": (min((main_sessions[m]["facts"].first_ts for m in members
+                                       if main_sessions[m]["facts"].first_ts), default=None)
+                                  if best_state else None),
+            "cli_counter_end": (max((main_sessions[m]["facts"].last_ts for m in members
+                                     if main_sessions[m]["facts"].last_ts), default=None)
+                                if best_state else None),
             "api_ms": api_ms,
             "tool_ms": tool_ms,
             "n_subagents": subagents_by_session.get(sid, 0),
-            "tool_calls": session_main_tool_totals[sid]["calls"],
-            "tool_errors": session_main_tool_totals[sid]["errors"],
+            # Tool calls and errors of the session and its subagents (errors
+            # exclude refusals); the main_* pair is the main conversation alone.
+            "tool_calls": session_tool_totals[sid]["calls"],
+            "tool_errors": session_tool_totals[sid]["errors"],
+            "main_tool_calls": session_main_tool_totals[sid]["calls"],
+            "main_tool_errors": session_main_tool_totals[sid]["errors"],
             "prs": prs_by_session.get(sid, []),
             # True when every request in this transcript is also in another one
             # and it owns no subagent requests either, i.e. it is a resume/fork
@@ -946,7 +1062,8 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
                                   if info["facts"].requests and sid not in derived_sessions),
             "total_transcripts": len(main_sessions),
             "derived_sessions": len(derived_sessions),
-            "total_subagents": len(sub_agents),
+            # A subagent transcript copied under two parents is one subagent.
+            "total_subagents": len(unique_agents),
             "fast_mode_requests": fast_requests,
             "date_min": min(dates) if dates else None,
             "date_max": max(dates) if dates else None,

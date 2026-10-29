@@ -2,7 +2,10 @@
 // Team dashboard: everything here comes from people's merged export files
 // (claude_usage/team.py), never from this machine's own logs.
 
-const SERIES_VARS = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6','--series-7','--series-8'];
+// Nine, because a chart names up to nine series before the rest go under "Other"
+// (--series-9 is defined in team.html): a ninth that reused the first colour would
+// read as the same person or model.
+const SERIES_VARS = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6','--series-7','--series-8','--series-9'];
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 // Names, emails, project paths and file names all come from other people's
 // files, so nothing reaches innerHTML unescaped.
@@ -46,10 +49,26 @@ function fmtTokens(n) {
 }
 function fmtX(n) { return (Number(n) || 0).toFixed(1) + '×'; }
 function fmtHours(h) { return !h ? '0h' : h >= 1 ? h.toFixed(1) + 'h' : Math.round(h * 60) + 'm'; }
+// A moment in the viewer's own zone, with the year and the zone's name, so it is
+// never read as a date in the export's zone.
 function fmtWhen(iso) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    timeZoneName: 'short' });
 }
+// An export's timestamp as its own machine wrote it ("2026-10-29T10:00:00-07:00"):
+// date with year, time and offset, the zone the export's days are cut in -- not
+// the viewer's, which would put a date beside it that its own weeks don't match.
+function fmtAsWritten(iso) {
+  if (!iso) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(String(iso));
+  if (!m) return String(iso);
+  const zone = !m[6] ? '' : m[6] === 'Z' ? ' UTC' : ' UTC' + m[6].replace(/^([+-]\d{2}):?(\d{2})$/, '$1:$2');
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}${zone}`;
+}
+const plural = (n, one, many) => `${fmtInt(n)} ${Math.round(n) === 1 ? one : many || one + 's'}`;
 function shortDay(day) {
   return day ? new Date(day + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '—';
 }
@@ -180,14 +199,23 @@ function setupFilters() {
   }
   const from = document.getElementById('dateFrom'), to = document.getElementById('dateTo');
   from.value = state.from || ''; to.value = state.to || '';
-  from.onchange = () => { if (from.value) { state.from = mondayOf(from.value + 'T12:00:00'); clearPreset(); renderAll(); } };
-  to.onchange = () => { if (to.value) { state.to = mondayOf(to.value + 'T12:00:00'); clearPreset(); renderAll(); } };
+  // An end before the start is a slip, not a request for nothing: the two weeks
+  // are swapped, the boxes follow, and the summary says so.
+  const settle = () => {
+    const [first, last, swapped] = orderWeeks(state.from, state.to);
+    state.from = first; state.to = last; state.swapped = swapped;
+    if (swapped) { from.value = first; to.value = last; }
+    clearPreset(); renderAll();
+  };
+  from.onchange = () => { if (from.value) { state.from = mondayOf(from.value + 'T12:00:00'); settle(); } };
+  to.onchange = () => { if (to.value) { state.to = mondayOf(to.value + 'T12:00:00'); settle(); } };
   document.querySelectorAll('#presetRow button').forEach(b => {
     b.onclick = () => {
       const weeks = allWeeks();
       const n = b.dataset.weeks;
       state.to = weeks[weeks.length - 1];
       state.from = n === 'all' ? weeks[0] : weeks[Math.max(0, weeks.length - Number(n))];
+      state.swapped = false;
       from.value = state.from; to.value = state.to;
       document.querySelectorAll('#presetRow button').forEach(x => x.classList.toggle('active', x === b));
       renderAll();
@@ -203,6 +231,8 @@ function setupFilters() {
     b.onclick = () => { state.mix = b.dataset.mix; toggleActive('#mixRow', b); renderMix(); };
   });
 }
+// The two weeks in order: [first, last, whether they had to be swapped].
+function orderWeeks(a, b) { return a > b ? [b, a, true] : [a, b, false]; }
 function clearPreset() { document.querySelectorAll('#presetRow button').forEach(x => x.classList.remove('active')); }
 function toggleActive(sel, btn) { document.querySelectorAll(sel + ' button').forEach(x => x.classList.toggle('active', x === btn)); }
 
@@ -216,18 +246,21 @@ function renderNotices() {
   }
   el.innerHTML = notes.join('');
   const sub = document.getElementById('subtitle');
-  sub.textContent = `${PAYLOAD.people.length} people · ${PAYLOAD.sources.length} export(s) · merged ${fmtWhen(PAYLOAD.generated_at)}`;
+  const skipped = (PAYLOAD.skipped || []).length;
+  sub.textContent = `${PAYLOAD.people.length} people · ${PAYLOAD.sources.length} export(s)` +
+    (skipped ? ` · ${skipped} skipped (see People & data)` : '') + ` · merged ${fmtWhen(PAYLOAD.generated_at)}`;
 }
 
 function renderAll() {
   const weeks = allWeeks().filter(weekOk);
   document.getElementById('rangeSummary').textContent =
-    weeks.length ? `${shortDay(state.from)} – ${shortDay(addDays(state.to, 6))} · ${weeks.length} weeks` : '';
+    weeks.length ? `${shortDay(state.from)} – ${shortDay(addDays(state.to, 6))} · ${weeks.length} weeks` +
+      (state.swapped ? ' · start and end were the wrong way round, so they were swapped' : '') : '';
   showTab(currentTab);
 }
 
 // ---------------------------------------------------------------- views
-function weeklyRows() { return PAYLOAD.weekly.filter(r => personOk(r[W.person]) && weekOk(r[W.week])); }
+function weeklyRows() { return (PAYLOAD.weekly || []).filter(r => personOk(r[W.person]) && weekOk(r[W.week])); }
 // The selected weeks as dates: the first Monday to the last Sunday.
 function teamRange() { return { from: state.from, to: addDays(state.to, 6) }; }
 // What rangeFor filters per person, computed once per render: the limits and
@@ -247,15 +280,27 @@ function rangeFor(p, ctx) {
     ctx.prs.filter(r => r.person === p.person), teamRange(), PAYLOAD.prices,
     { intervals: ctx.intervals[p.person], basis: ctx.basis[p.person] });
 }
-// Seat use as a percentage; "≈" when some weeks' days aren't exact (an export
+// Seat use as a percentage. "≈" when some weeks' days aren't exact (an export
 // from before exact days): the title gives the range the person's own total
-// leaves, or says the days are estimated when there is no total to go on.
+// leaves, or says the days are estimated when there is no total to go on. "≥"
+// when the only doubt is that the person worked on two machines: the exports
+// count days per machine, so a day worked on both can't be told from two days,
+// and the figure is the busier machine's days (a floor).
 function seatUseCell(r) {
-  const approx = r.approx && r.seatUse != null;
-  const title = !approx ? '' : r.activeLo != null
-    ? ` title="${esc(`Between ${fmtInt(r.activeLo)} and ${fmtInt(r.activeHi)} active days in these weeks, from the export's own total; a re-export gives the exact count.`)}"`
-    : ' title="Active days are estimated for some weeks; a re-export gives the exact count."';
-  return `<td class="num"${title}>${approx ? '≈' : ''}${fmtPct(r.seatUse)}</td>`;
+  const known = r.seatUse != null;
+  const mark = !known ? '' : r.lower ? '≥' : r.approx ? '≈' : '';
+  let title = '';
+  if (known && r.lower) {
+    const share = d => fmtPct(Math.min(d / r.workdays, 1));
+    title = ` title="${esc(`At least this: they worked on more than one machine, and the exports count days per machine, ` +
+      `so days worked on both can't be told from different days. Between ${fmtInt(r.daysLo)} and ${fmtInt(r.daysHi)} active days ` +
+      `in these weeks, so ${share(r.daysLo)} to ${share(r.daysHi)}.`)}"`;
+  } else if (known && r.approx) {
+    title = r.activeLo != null
+      ? ` title="${esc(`Between ${fmtInt(r.activeLo)} and ${fmtInt(r.activeHi)} active days in these weeks, from the export's own total; a re-export gives the exact count.`)}"`
+      : ' title="Active days are estimated for some weeks; a re-export gives the exact count."';
+  }
+  return `<td class="num"${title}>${mark}${fmtPct(r.seatUse)}</td>`;
 }
 
 function renderFindings() {
@@ -284,16 +329,31 @@ function renderTrend() {
   const weeks = allWeeks().filter(weekOk);
   const rows = weeklyRows();
   const people = selectedPeople();
-  const cost = dict(), active = dict();
+  const intervals = coverageIntervals(PAYLOAD.sources);
+  const cost = dict(), active = dict(), total = dict();
   rows.forEach(r => {
     cost[r[W.person] + '|' + r[W.week]] = (cost[r[W.person] + '|' + r[W.week]] || 0) + r[W.cost];
+    total[r[W.person]] = (total[r[W.person]] || 0) + r[W.cost];
     if (r[W.cost] > 0) (active[r[W.week]] || (active[r[W.week]] = new Set())).add(r[W.person]);
   });
+  // A week outside a person's exports is unknown, not $0: not drawn. People
+  // with no spend in the range aren't in the legend; the 8 biggest are named
+  // and the rest are Other (a ninth is named rather than made an "Other" of one).
+  const covered = (p, w) => coveredWeek(personIntervals(p, intervals[p.person]), w);
+  const ranked = people.filter(p => total[p.person] > 0).sort((a, b) => total[b.person] - total[a.person] ||
+    personLabel(a).localeCompare(personLabel(b)));
+  const named = ranked.slice(0, ranked.length === 9 ? 9 : 8), rest = ranked.slice(named.length);
+  const series = (list, i, label, color) => ({ type: 'bar', label, stack: 'cost', yAxisID: 'y', backgroundColor: color,
+    data: weeks.map(w => { const c = list.filter(p => covered(p, w)); return c.length ? c.reduce((s, p) => s + (cost[p.person + '|' + w] || 0), 0) : null; }) });
+  // The newest week is marked when the exports end before its Sunday: part of it is unseen.
+  const ends = people.flatMap(p => personIntervals(p, intervals[p.person]).map(iv => iv.to)).sort();
+  const seenTo = ends.length ? ends[ends.length - 1] : null;
+  const label = w => shortDay(w) + (seenTo && addDays(w, 6) > seenTo ? ' (part)' : '');
   const data = {
-    labels: weeks.map(shortDay),
+    labels: weeks.map(label),
     datasets: [
-      ...people.map((p, i) => ({ type: 'bar', label: personLabel(p), stack: 'cost', yAxisID: 'y',
-        data: weeks.map(w => cost[p.person + '|' + w] || 0), backgroundColor: cssVar(SERIES_VARS[i % SERIES_VARS.length]) })),
+      ...named.map((p, i) => series([p], i, personLabel(p), cssVar(SERIES_VARS[i % SERIES_VARS.length]))),
+      ...(rest.length ? [series(rest, 0, `Other (${rest.length} people)`, cssVar('--other'))] : []),
       { type: 'line', label: 'Active people', yAxisID: 'y1', data: weeks.map(w => (active[w] ? active[w].size : 0)),
         borderColor: cssVar('--modaxo-orange') || '#FB4F00', pointRadius: 3, borderWidth: 2 },
     ],
@@ -304,9 +364,19 @@ function renderTrend() {
   upsert('trend', document.getElementById('trendChart'), { data, options });
 }
 
+// A week no selected person's exports touch is unknown, not a week of no use: the
+// model and repository charts leave it undrawn, as Team spend does.
+function coveredWeekFn() {
+  const intervals = coverageIntervals(PAYLOAD.sources);
+  const covers = selectedPeople().flatMap(p => personIntervals(p, intervals[p.person]));
+  return w => coveredWeek(covers, w);
+}
+
 // Team-wide model use by week: everyone selected, added together, stacked by
-// exact model. Cost or output tokens (tokens are what use up the allowance).
-// The 8 biggest models over the selected weeks are named; the rest are Other.
+// exact model. Cost or output tokens (every request draws on usage, its whole
+// context included, so output tokens alone don't measure the allowance).
+// The 8 biggest models over the selected weeks are named; the rest are Other
+// (a ninth model is named rather than folded into an "Other" of one).
 function renderModelTrend() {
   const weeks = allWeeks().filter(weekOk);
   const tokens = state.modelMetric === 'tokens';
@@ -319,11 +389,12 @@ function renderModelTrend() {
   });
   const ranked = Object.keys(totals).filter(k => totals[k] > 0)
     .sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
-  const named = ranked.slice(0, 8), rest = ranked.slice(8);
+  const named = ranked.slice(0, ranked.length === 9 ? 9 : 8), rest = ranked.slice(named.length);
+  const seen = coveredWeekFn();
   const datasets = named.map((label, i) => ({ label, backgroundColor: cssVar(SERIES_VARS[i % SERIES_VARS.length]),
-    data: weeks.map(w => by[label + '|' + w] || 0) }));
+    data: weeks.map(w => seen(w) ? by[label + '|' + w] || 0 : null) }));
   if (rest.length) datasets.push({ label: 'Other', backgroundColor: cssVar('--other'),
-    data: weeks.map(w => rest.reduce((s, label) => s + (by[label + '|' + w] || 0), 0)) });
+    data: weeks.map(w => seen(w) ? rest.reduce((s, label) => s + (by[label + '|' + w] || 0), 0) : null) });
   const fmt = tokens ? fmtTokens : fmtCost0;
   const options = { responsive: true, maintainAspectRatio: false,
     plugins: { legend: { display: true }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw)}` } } },
@@ -347,7 +418,7 @@ function renderFreshness() {
       const zone = s.bucket_zone || 'machine zone (pre-schema 8)';
       const who = nameOf(s.person);
       const machine = s.machine_id ? `<div class="foot-note" style="margin:0">${esc(s.machine_id)}</div>` : '';
-      return `<tr><td>${esc(who)}${machine}</td><td>${esc(fmtWhen(s.exported_at))}${badge}</td>` +
+      return `<tr><td>${esc(who)}${machine}</td><td>${esc(fmtAsWritten(s.exported_at))}${badge}</td>` +
         `<td>${esc(s.window_from || '?')} – ${esc(s.window_to || '?')}</td><td>${esc(zone)}</td></tr>`;
     }).join('') + `</tbody></table></div>`;
 }
@@ -382,14 +453,18 @@ function renderRepoTrend() {
     const key = named.has(repo) ? repo : OTHER;
     by[key + '|' + r[W.week]] = (by[key + '|' + r[W.week]] || 0) + r[W.cost];
   });
+  const seen = coveredWeekFn();
   const data = { labels: weeks.map(shortDay), datasets: top.map((r, i) => ({ label: repoLabel(r),
-    data: weeks.map(w => by[(r.other ? OTHER : r.repo) + '|' + w] || 0),
+    data: weeks.map(w => seen(w) ? by[(r.other ? OTHER : r.repo) + '|' + w] || 0 : null),
     backgroundColor: r.other ? cssVar('--other') : cssVar(SERIES_VARS[i % SERIES_VARS.length]) })) };
   const options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } },
     scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { callback: v => fmtCost0(v) } } } };
   upsert('repoTrend', document.getElementById('repoTrendChart'), { data, options });
 }
 
+// Spend per active day. Where a person's days aren't exact (an older export, or
+// two machines whose days can overlap) the days and the per-day figure are
+// shown as a range with "≈": the most days possible give the lowest rate.
 function renderPerDay() {
   const tbody = document.querySelector('#perDayTable tbody');
   const rows = perActiveDay(weeklyRows(), rangeCtx().basis).filter(d => d.cost > 0);
@@ -397,21 +472,49 @@ function renderPerDay() {
   const max = Math.max(BENCHMARK.p90 * 1.2, ...rows.map(d => d.perDay || 0));
   const pct = v => (100 * v / max).toFixed(1) + '%';
   tbody.innerHTML = rows.sort((a, b) => (b.perDay || 0) - (a.perDay || 0)).map(d => {
-    const verdict = d.perDay == null ? '—' : d.perDay > BENCHMARK.p90 ? '<span class="badge warn">above 90th percentile</span>'
+    const lo = d.perDayLo == null ? d.perDay : d.perDayLo;
+    // Above the line only if even the most days possible leave them over it.
+    const verdict = d.perDay == null ? '—'
+      : lo > BENCHMARK.p90 ? '<span class="badge warn">above 90th percentile</span>'
+      : d.perDay > BENCHMARK.p90 ? 'may be above the 90th percentile'
       : d.perDay > BENCHMARK.average ? 'above average' : 'typical';
     const bar = d.perDay == null ? '' : `<div class="perday-bar"><span style="width:${pct(d.perDay)}"></span>` +
       `<i class="bench-mark" style="left:${pct(BENCHMARK.average)}" title="$${BENCHMARK.average} average"></i>` +
       `<i class="bench-mark p90" style="left:${pct(BENCHMARK.p90)}" title="$${BENCHMARK.p90}: 90th percentile"></i></div>`;
     const who = nameOf(d.person);
-    return `<tr><td>${esc(who)}</td><td class="num">${fmtCost0(d.cost)}</td><td class="num">${fmtInt(d.days)}</td>` +
-      `<td class="num">${d.perDay == null ? '—' : fmtCost0(d.perDay)}</td><td>${bar}${verdict}</td></tr>`;
+    const ranged = d.approx && d.daysLo !== d.daysHi;
+    const daysCell = d.approx ? '≈' + (ranged ? `${fmtInt(d.daysLo)}–${fmtInt(d.daysHi)}` : fmtInt(d.days)) : fmtInt(d.days);
+    const perDay = d.perDay == null ? '—'
+      : !d.approx ? fmtCost0(d.perDay)
+      : '≈' + (d.perDayHi == null ? `at least ${fmtCost0(lo)}`
+        : Math.round(lo) === Math.round(d.perDayHi) ? fmtCost0(d.perDay) : `${fmtCost0(lo)}–${fmtCost0(d.perDayHi)}`);
+    const why = d.approx ? ' title="Estimated active days: the exports give days per machine, or only per project, so the range is what they allow. A re-export of every machine gives the exact days."' : '';
+    return `<tr><td>${esc(who)}</td><td class="num">${fmtCost0(d.cost)}</td><td class="num"${why}>${daysCell}</td>` +
+      `<td class="num"${why}>${perDay}</td><td>${bar}${verdict}</td></tr>`;
   }).join('');
 }
 
+// People (in the selection) with an export from before schema 13, optionally only
+// those that carry `file`. Their lines and tool errors are measured the old way.
+function olderSourcePeople(file) {
+  const ids = new Set((PAYLOAD.sources || []).filter(s => Number(s.schema_version) < 13 && personOk(s.person) &&
+    (!file || (s.files || []).includes(file))).map(s => s.person));
+  return [...ids].map(nameOf).sort((a, b) => a.localeCompare(b));
+}
 function renderOutput() {
   const tbody = document.querySelector('#outputTable tbody');
+  const notesEl = document.getElementById('outputNotes');
+  if (notesEl) {
+    const old = olderSourcePeople();
+    const newer = (PAYLOAD.sources || []).some(s => Number(s.schema_version) >= 13 && personOk(s.person));
+    notesEl.innerHTML = old.length ? `<p class="foot-note">Lines from ${old.map(esc).join(', ')} come from Claude Code's own counter ` +
+      `(their exports are from before schema 13)${newer ? ', while the rest are counted per edit: two different measures sit in this table, so compare lines across them with care' : ''}. ` +
+      `Ask them to re-export for per-edit lines.</p>` : '';
+  }
   const prs = (PAYLOAD.prs || []).filter(r => personOk(r.person) && r.opened_on && weekOk(mondayOf(r.opened_on + 'T12:00:00')));
-  const out = outputByPerson(weeklyRows(), prs);
+  // What the sessions that started in these weeks cost in all, for the line-data share.
+  const started = PAYLOAD.session_costs ? PAYLOAD.session_costs.filter(r => personOk(r[0]) && weekOk(r[1])) : null;
+  const out = outputByPerson(weeklyRows(), prs, started);
   const people = Object.keys(out).filter(p => out[p].cost > 0 || out[p].prs > 0);
   if (!people.length) { tbody.innerHTML = emptyRow(7, 'No usage or PRs in range.'); return; }
   const blank = v => v == null ? '—' : fmtInt(v);
@@ -449,17 +552,26 @@ function renderPrs() {
   const prs = (PAYLOAD.prs || []).filter(r => personOk(r.person) && r.opened_on && weekOk(mondayOf(r.opened_on + 'T12:00:00')));
   const by = dict();
   prs.forEach(r => {
-    const b = by[r.pr_repo || '(unknown)'] || (by[r.pr_repo || '(unknown)'] = { n: 0, people: dict(), elsewhere: 0, cost: 0 });
+    const b = by[r.pr_repo || '(unknown)'] || (by[r.pr_repo || '(unknown)'] = { n: 0, people: dict(), elsewhere: 0, known: 0, costed: 0, cost: 0 });
     b.n++; b.people[r.person] = (b.people[r.person] || 0) + 1;
+    // "yes"/"no" is whether the PR's repo is the folder's; blank is not recorded (not "no").
+    if (r.in_project_repo === 'no' || r.in_project_repo === 'yes') b.known++;
     if (r.in_project_repo === 'no') b.elsewhere++;
-    b.cost += r.session_cost_usd / (r.session_prs || 1);
+    // A blank session cost is not a free session: that PR has no cost to add or average.
+    if (r.session_cost_usd != null) { b.costed++; b.cost += r.session_cost_usd / (r.session_prs || 1); }
   });
   const rows = Object.entries(by).sort((a, b) => b[1].n - a[1].n);
   if (!rows.length) { tbody.innerHTML = emptyRow(6, 'No pull requests logged in range.'); return; }
-  tbody.innerHTML = rows.map(([repo, b]) => `<tr><td>${esc(repo)}</td><td class="num">${fmtInt(b.n)}</td>
+  tbody.innerHTML = rows.map(([repo, b]) => {
+    const unknown = b.n - b.known;
+    const another = !b.known ? '<span title="Not recorded: these exports don\'t say which folder the session ran in.">?</span>'
+      : fmtInt(b.elsewhere) + (unknown ? ` <span class="foot-note" style="margin:0">${fmtInt(unknown)} not recorded</span>` : '');
+    const costNote = b.costed < b.n && b.costed ? ` <span class="foot-note" style="margin:0">${fmtInt(b.costed)} of ${fmtInt(b.n)} PRs</span>` : '';
+    return `<tr><td>${esc(repo)}</td><td class="num">${fmtInt(b.n)}</td>
     <td>${Object.entries(b.people).sort((x, y) => y[1] - x[1]).map(([p, n]) => `${esc(nameOf(p))} (${fmtInt(n)})`).join(', ')}</td>
-    <td class="num">${b.elsewhere ? fmtInt(b.elsewhere) : '—'}</td>
-    <td class="num">${fmtCost0(b.cost)}</td><td class="num">${fmtCost0(b.cost / b.n)}</td></tr>`).join('');
+    <td class="num">${another}</td>
+    <td class="num">${b.costed ? fmtCost0(b.cost) : '—'}${costNote}</td><td class="num">${b.costed ? fmtCost0(b.cost / b.costed) : '—'}</td></tr>`;
+  }).join('');
 }
 
 // ---------------------------------------------------------------- habits
@@ -501,7 +613,8 @@ function habitCell(col, v, p) {
   const why = key === 'context' ? 'Not measured: re-export with the current tool' : 'Nothing to measure in these weeks';
   if (v == null) return `<td class="num" title="${why}">—</td>`;
   const text = cell(v, p);
-  return `<td class="num">${flagged && v >= FLAG_SHARE ? `<span class="badge warn">${text}</span>` : text}</td>`;
+  // Flagged by the figure as shown: 9.96% reads "10.0%", so it carries the badge.
+  return `<td class="num">${flagged && Math.round(v * 1000) / 1000 >= FLAG_SHARE ? `<span class="badge warn">${text}</span>` : text}</td>`;
 }
 function renderTeamHabits() {
   const el = document.getElementById('teamHabits');
@@ -517,9 +630,16 @@ function renderTeamHabits() {
   // An export covers every week in its window, so someone who didn't use
   // Claude Code that week still has a row -- of zeros. They aren't listed.
   const people = Object.values(by).filter(p => p.prompts > 0 || p.est_cost_usd > 0);
+  // Who used Claude Code in these weeks but has no habit data (exports from before
+  // schema 7 carry none): named, so they aren't mistaken for people who didn't use it.
+  const used = new Set(weeklyRows().filter(r => r[W.cost] > 0).map(r => r[W.person]));
+  const have = new Set(people.map(p => p.person));
+  const missing = [...used].filter(p => !have.has(p)).map(nameOf).sort((a, b) => a.localeCompare(b));
+  const missingNote = missing.length
+    ? ` Not shown, with no habit data in these weeks (an export from before schema 7: ask them to re-export): ${missing.map(esc).join(', ')}.` : '';
   if (!people.length) {
     el.innerHTML = `<div class="empty-state"><div class="es-title">No one with habit data</div>` +
-      `<div class="es-body">No selected person used Claude Code in these weeks with an export that carries habit data (schema 7 or later).</div></div>`;
+      `<div class="es-body">No selected person used Claude Code in these weeks with an export that carries habit data (schema 7 or later).${missingNote}</div></div>`;
     return;
   }
   const labels = dict();
@@ -535,33 +655,66 @@ function renderTeamHabits() {
   const rows = people.map(p => `<tr data-person="${esc(p.person)}"><td title="${esc(p.person)}">${esc(p.name)}</td>` +
     HABIT_COLUMNS.map(col => habitCell(col, col[3](p), p)).join('') + `</tr>`).join('');
   el.innerHTML = `<div class="table-scroll"><table class="data-table">${head}<tbody>${median}${rows}</tbody></table></div>` +
-    `<p class="foot-note">${people.length} ${people.length === 1 ? 'person' : 'people'} used Claude Code in the selected weeks. ` +
+    `<p class="foot-note">${used.size > people.length
+      ? `${people.length} of the ${used.size} people who used Claude Code in the selected weeks have habit data.`
+      : `${people.length} ${people.length === 1 ? 'person' : 'people'} used Claude Code in the selected weeks.`}${missingNote} ` +
     `Hover a column for what it means. Highlighted: at or above Anthropic’s 10% line. ` +
     `Context tax is blank for exports made before schema 10 — re-export to measure.</p>`;
 }
 
+// Tool errors for the selected people. MCP servers first, every one that meets
+// the threshold (a finding names a server, so its row must be here), then the
+// built-in tools; the rest past 12 rows sit under "Show more". Claude Code's own
+// tools are in their own table. The People column names who hit errors, with
+// how many. Tool names that never succeeded are listed apart (analyzeTools).
+const FRICTION_ROWS = 12;
 function renderFriction() {
   const tbody = document.querySelector('#frictionTable tbody');
   const ccBody = document.querySelector('#ccToolsTable tbody');
-  const main = dict(), cc = dict();
-  (PAYLOAD.tools || []).filter(r => personOk(r[0]) && weekOk(r[1])).forEach(([person, , tool, integration, calls, errors]) => {
-    const into = isClaudeCodeTool(integration, tool) ? cc : main;
-    const key = integrationLabel(integration, tool);
-    const b = into[key] || (into[key] = { calls: 0, errors: 0, people: new Set(), integration });
-    b.calls += calls; b.errors += errors; b.people.add(person);
-  });
-  [main, cc].forEach(by => Object.values(by).forEach(b => { b.invented = inventedTool(b.integration, b); }));
-  // Most errors first, so a rarely-called tool can't outrank the one behind
-  // most failures; a built-in name the model made up (never succeeded) is
-  // left out, since there is no such tool to fix.
-  const rowsOf = by => Object.entries(by).filter(([, b]) => b.calls >= 20 && b.errors > 0 && !b.invented)
-    .sort((a, b) => b[1].errors - a[1].errors || a[0].localeCompare(b[0])).slice(0, 12);
-  const html = rows => rows.map(([name, b]) => `<tr><td>${esc(name)}</td><td class="num">${fmtInt(b.calls)}</td>` +
+  const moreBody = document.querySelector('#frictionMoreBody');
+  const moreWrap = document.getElementById('frictionMoreWrap');
+  const notes = document.getElementById('frictionNotes');
+  const rowsIn = (PAYLOAD.tools || []).filter(r => personOk(r[0]) && weekOk(r[1]));
+  const res = analyzeTools(rowsIn);
+  const byErrors = (a, b) => b.errors - a.errors || a.label.localeCompare(b.label);
+  const hit = res.rows.filter(r => r.calls >= 20 && r.errors > 0);
+  const mcp = hit.filter(r => r.mcp && !r.cc).sort(byErrors);
+  const builtin = hit.filter(r => !r.mcp && !r.cc).sort(byErrors);
+  const cc = hit.filter(r => r.cc).sort(byErrors);
+  const ordered = mcp.concat(builtin);
+  const shown = Math.max(FRICTION_ROWS, mcp.length);
+  const html = rows => rows.map(b => `<tr><td>${esc(b.label)}</td><td class="num">${fmtInt(b.calls)}</td>` +
     `<td class="num">${fmtInt(b.errors)}</td><td class="num">${fmtPct(b.errors / b.calls)}</td>` +
-    `<td>${[...b.people].map(p => esc(nameOf(p))).join(', ')}</td></tr>`).join('');
-  const m = rowsOf(main), c = rowsOf(cc);
-  tbody.innerHTML = m.length ? html(m) : emptyRow(5, 'No integration with 20+ calls returned errors in range, or no export carries tool data yet (schema 7).');
-  ccBody.innerHTML = c.length ? html(c) : emptyRow(5, "No Claude Code tool with 20+ calls returned errors in range.");
+    `<td>${Object.entries(b.people).filter(([, n]) => n > 0).sort((x, y) => y[1] - x[1] || nameOf(x[0]).localeCompare(nameOf(y[0])))
+      .map(([p, n]) => `${esc(nameOf(p))} (${fmtInt(n)})`).join(', ')}</td></tr>`).join('');
+  tbody.innerHTML = ordered.length ? html(ordered.slice(0, shown))
+    : emptyRow(5, 'No integration with 20+ calls returned errors in range, or no export carries tool data yet (schema 7).');
+  const rest = ordered.slice(shown);
+  if (moreBody) moreBody.innerHTML = html(rest);
+  if (moreWrap) {
+    moreWrap.hidden = !rest.length;
+    const sum = moreWrap.querySelector('summary');
+    if (sum) sum.textContent = `Show ${rest.length} more tool${rest.length === 1 ? '' : 's'}`;
+  }
+  ccBody.innerHTML = cc.length ? html(cc) : emptyRow(5, "No Claude Code tool with 20+ calls returned errors in range.");
+
+  const parts = [];
+  const names = (list, fmt) => list.slice(0, 10).map(fmt).join('; ') + (list.length > 10 ? `; and ${list.length - 10} more` : '');
+  if (res.neverWorked.length) parts.push(`MCP tool names that never once succeeded while their server's other tools did (a name the ` +
+    `model got wrong, or a tool that isn't available), left out of the server's rate: ` +
+    esc(names(res.neverWorked, t => `${t.server}: ${t.tool} (${fmtInt(t.calls)} ${t.calls === 1 ? 'call' : 'calls'})`)) + '.');
+  if (res.invented.length) parts.push(`Tool names that aren't in Claude Code's documented tool list and never succeeded (made up by the model, or not ` +
+    `available), left out: ${esc(names(res.invented, t => `${t.tool} (${fmtInt(t.calls)})`))}.`);
+  // Exports from before schema 7 carry no tool data: their people aren't zero-error people.
+  const usedNow = new Set(weeklyRows().filter(r => r[W.cost] > 0).map(r => r[W.person]));
+  const hasTools = new Set((PAYLOAD.sources || []).filter(s => (s.files || []).includes('tools')).map(s => s.person));
+  const noTools = [...usedNow].filter(p => !hasTools.has(p)).map(nameOf).sort((a, b) => a.localeCompare(b));
+  // Before schema 13 a refused call (a permission denied, a hook that blocked it) was counted as an error.
+  const oldTools = olderSourcePeople('tools');
+  if (oldTools.length) parts.push(`Tool errors from ${oldTools.map(esc).join(', ')} (exports from before schema 13) still count refused calls ` +
+    `(a permission denied, a hook that blocked it) as errors, so their rates read higher than the rest. Ask them to re-export.`);
+  if (noTools.length) parts.push(`No tool data from ${noTools.map(esc).join(', ')} (their exports are from before schema 7: ask them to re-export), so their errors are not counted here.`);
+  if (notes) notes.innerHTML = parts.map(p => `<p class="foot-note">${p}</p>`).join('');
 }
 
 // ---------------------------------------------------------------- tiles
@@ -581,14 +734,22 @@ function renderTiles() {
   const ranged = people.map(p => rangeFor(p, ctx));
   const idle = ranged.filter(r => r.idle === true).length;
   const uncovered = ranged.filter(r => !r.covered).length;
-  const active = ranged.length - idle - uncovered;
+  // Weeks whose CLI history is already deleted say nothing about use: not idle, not active.
+  const deleted = ranged.filter(r => r.historyDeleted).length;
+  const noLogs = ranged.filter(r => r.noLogs).length;
+  const active = ranged.length - idle - uncovered - deleted - noLogs;
   const use = median(ranged.map(r => r.seatUse).filter(v => v != null));
+  const floor = ranged.some(r => r.seatUse != null && r.lower);
   const hitPeople = new Set(limits.map(l => l.person)).size;
   const valueMedian = median(ranged.map(r => r.value).filter(v => v != null));
   const value = teamValue(ranged);
   const tiles = [
-    ['People', fmtInt(people.length), `${active} active · ${idle} no activity in these weeks` + (uncovered ? ` · ${uncovered} not covered by these weeks` : '')],
-    ['Median seat use', fmtPct(use), 'active days ÷ workdays, selected weeks'],
+    ['People', fmtInt(people.length), `${active} active · ${idle} no activity in these weeks` + (uncovered ? ` · ${uncovered} not covered by these weeks` : '') +
+      (deleted ? ` · ${deleted} with CLI history deleted` : '') + (noLogs ? ` · ${noLogs} export with no logs` : '')],
+    // "≥" when a person in the median worked on two machines: their days are the busier
+    // machine's, a floor, and a median of floors with exact figures is still a floor.
+    ['Median seat use', (use != null && floor ? '≥' : '') + fmtPct(use),
+     'active days ÷ workdays, selected weeks' + (use != null && floor ? ' · ≥: some people worked on two machines, so their days are a floor' : '')],
     ['Usage (list price)', fmtCost0(cost), 'in the selected weeks'],
     ['Limit hits', fmtInt(limits.length), `${fmtInt(hitPeople)} ${hitPeople === 1 ? 'person' : 'people'}`],
     ['Locked out', fmtHours(locked.reduce((s, l) => s + l.blocked_hours, 0)),
@@ -613,13 +774,20 @@ function renderHeatmap() {
   PAYLOAD.weekly.forEach(r => {
     const [person, week, , cost, , requests, , , partial, cliGap] = r;
     if (!personOk(person) || !weekOk(week)) return;
-    const c = cells[person + '|' + week] || (cells[person + '|' + week] = { cost: 0, requests: 0, rows: [], partial: false, cliGap: false });
+    const c = cells[person + '|' + week] || (cells[person + '|' + week] = { cost: 0, requests: 0, rows: [], machines: dict(), cliGap: false });
     c.cost += cost; c.requests += requests; c.rows.push(r);
-    c.partial = c.partial || partial; c.cliGap = c.cliGap || cliGap;
+    // Part-week only if every machine's days of the week were cut short: one machine
+    // that covers the whole week makes the week whole.
+    const m = r[W.machine] || '';
+    c.machines[m] = c.machines[m] || !!partial;
+    c.cliGap = c.cliGap || cliGap;
   });
   // The same per-week rule as the People table and spend per active day.
-  const basis = rangeCtx().basis;
-  Object.values(cells).forEach(c => Object.assign(c, weekDaysFigure(basis[c.rows[0][W.person]], c.rows[0][W.week], c.rows)));
+  const ctx = rangeCtx(), basis = ctx.basis;
+  Object.values(cells).forEach(c => {
+    Object.assign(c, weekDaysFigure(basis[c.rows[0][W.person]], c.rows[0][W.week], c.rows));
+    c.partial = Object.values(c.machines).every(Boolean);
+  });
   const metric = state.metric;
   const max = Math.max(0, ...Object.values(cells).map(c => c[metric]));
   const table = document.getElementById('heatmap');
@@ -627,17 +795,25 @@ function renderHeatmap() {
   const fmt = metric === 'cost' ? fmtCost0 : fmtInt;
   const head = `<thead><tr><th>Person</th>${weeks.map(w => `<th title="Week of ${esc(w)}">${esc(shortDay(w))}</th>`).join('')}</tr></thead>`;
   const body = people.map(p => {
+    const covers = personIntervals(p, ctx.intervals[p.person]);
     const tds = weeks.map(w => {
       const c = cells[p.person + '|' + w];
       if (!c || !c[metric]) {
+        // A week no export of theirs touches is unknown, not a week of no activity.
+        if (!c && !coveredWeek(covers, w)) {
+          return `<td class="hm-cell uncovered" title="${esc(personLabel(p))} · week of ${esc(w)}: not covered by their exports"></td>`;
+        }
         const cls = c && c.cliGap ? ' cli-gap' : '';
-        return `<td class="hm-cell${cls}" title="${esc(personLabel(p))} · week of ${esc(w)}: no activity"></td>`;
+        return `<td class="hm-cell${cls}" title="${esc(personLabel(p))} · week of ${esc(w)}: no activity${c && c.cliGap ? ' recorded (CLI history deleted)' : ''}"></td>`;
       }
       const level = max ? Math.max(0.08, c[metric] / max) : 0;
       const cls = (c.partial ? ' partial' : '') + (c.cliGap ? ' cli-gap' : '');
-      const tip = `${personLabel(p)} · week of ${w}: ${fmtCost(c.cost)}, ${fmtInt(c.requests)} requests, ` +
-        `${c.approx ? '≈' : ''}${fmtInt(c.days)} active days${c.partial ? ' · part-week' : ''}${c.cliGap ? ' · CLI history deleted' : ''}`;
-      return `<td class="hm-cell${cls}" style="--hm:${level.toFixed(3)}" title="${esc(tip)}">${esc(fmt(c[metric]))}</td>`;
+      // An estimated week says what it could be: the busier machine's days (a floor) up to all machines' added.
+      const range = c.approx && c.lo != null && c.hi != null && c.lo !== c.hi ? `, between ${fmtInt(c.lo)} and ${fmtInt(c.hi)}` : '';
+      const tip = `${personLabel(p)} · week of ${w}: ${fmtCost(c.cost)}, ${plural(c.requests, 'request')}, ` +
+        `${c.approx ? '≈' : ''}${plural(c.days, 'active day')}${c.approx ? ' (estimated' + range + ')' : ''}${c.partial ? ' · part-week' : ''}${c.cliGap ? ' · CLI history deleted' : ''}`;
+      const text = (metric === 'days' && c.approx ? '≈' : '') + fmt(c[metric]);
+      return `<td class="hm-cell${cls}" style="--hm:${level.toFixed(3)}" title="${esc(tip)}">${esc(text)}</td>`;
     }).join('');
     return `<tr><th scope="row" title="${esc(p.person)}">${esc(personLabel(p))}</th>${tds}</tr>`;
   }).join('');
@@ -682,7 +858,7 @@ function renderLimits() {
       <td>${esc(seat)}</td>
       ${counts}
       ${inRange ? `<td class="num">${pct == null ? '—' : fmtPct(pct)}</td>
-      <td>${st ? `<span class="badge ${st[0]}">${esc(st[1])}</span>` : '<span class="foot-note" style="margin:0">never hit</span>'}</td>
+      <td>${st ? `<span class="badge ${st[0]}">${esc(st[1])}</span>` : '<span class="foot-note" style="margin:0" title="No allowance estimate: it needs a weekly-limit hit to calibrate from, and exports from before the allowance columns have none.">no estimate</span>'}</td>
       <td>${esc(fmtWhen(p.projected_limit_hit_at))}</td>`
         : `<td class="num" title="${title}">—</td><td title="${title}">—</td><td title="${title}">—</td>`}</tr>`;
   }).join('');
@@ -735,20 +911,27 @@ function renderOverage() {
 function renderMix() {
   const people = selectedPeople();
   const rows = PAYLOAD.models.filter(r => personOk(r[0]) && weekOk(r[1]));
-  const keyOf = state.mix === 'thread' ? (r => r[3]) : (r => r[2]);
+  // By model is by the exact model, as the Overview's model chart is (not by family);
+  // the 8 biggest are named and the rest are Other.
+  const exact = state.mix !== 'thread';
+  const keyOf = !exact ? (r => r[3]) : (r => modelLabel(r[7] || r[2]));
   const valOf = state.mix === 'tokens' ? (r => r[5]) : (r => r[4]);
   const groups = dict();
   rows.forEach(r => { const k = keyOf(r); groups[k] = (groups[k] || 0) + valOf(r); });
-  const keys = Object.keys(groups).sort((a, b) => groups[b] - groups[a]);
+  const ranked = Object.keys(groups).sort((a, b) => groups[b] - groups[a] || a.localeCompare(b));
+  const named = !exact ? ranked : ranked.slice(0, ranked.length === 9 ? 9 : 8);
+  const rest = new Set(ranked.slice(named.length));
+  const keys = rest.size ? named.concat(['\u0000other']) : named;
+  const shownKey = r => rest.has(keyOf(r)) ? '\u0000other' : keyOf(r);
   document.getElementById('mixTitle').textContent =
     state.mix === 'thread' ? 'Main vs subagent cost by person' : state.mix === 'tokens' ? 'Output tokens by model, by person' : 'Cost by model, by person';
   const fmt = state.mix === 'tokens' ? fmtTokens : fmtCost0;
   const data = {
     labels: people.map(personLabel),
     datasets: keys.map((k, i) => ({
-      label: k,
-      data: people.map(p => rows.filter(r => r[0] === p.person && keyOf(r) === k).reduce((s, r) => s + valOf(r), 0)),
-      backgroundColor: cssVar(SERIES_VARS[i % SERIES_VARS.length]),
+      label: k === '\u0000other' ? 'Other' : k,
+      data: people.map(p => rows.filter(r => r[0] === p.person && shownKey(r) === k).reduce((s, r) => s + valOf(r), 0)),
+      backgroundColor: k === '\u0000other' ? cssVar('--other') : cssVar(SERIES_VARS[i % SERIES_VARS.length]),
     })),
   };
   const options = { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
@@ -779,32 +962,53 @@ function renderPeople() {
   if (!people.length) { tbody.innerHTML = emptyRow(17, 'No people selected.'); return; }
   const ctx = rangeCtx();
   const num = (v, f) => v == null ? '—' : f(v);
+  // Every schema version a person's exports carry: the newest is the row's, the
+  // others are named beside it, since older ones are what to re-export.
+  const versions = dict();
+  PAYLOAD.sources.forEach(s => { (versions[s.person] || (versions[s.person] = new Set())).add(Number(s.schema_version)); });
   tbody.innerHTML = people.map(p => { const seat = tierLabel(p.seat_tier), usage = tierLabel(p.rate_limit_tier), r = rangeFor(p, ctx);
     const lastActive = r.lastActiveWeek ? 'week of ' + shortDay(r.lastActiveWeek) : '—';
-    const note = r.covered ? '' : ' <span class="foot-note" style="margin:0">not covered by these weeks</span>'; return `<tr>
+    const note = r.covered ? '' : ' <span class="foot-note" style="margin:0">not covered by these weeks</span>';
+    const badges = (r.idle ? ' <span class="badge warn">idle</span>' : '') +
+      (r.historyDeleted ? ' <span class="badge warn" title="Claude Code had already deleted this person\'s CLI history for these weeks, so only Desktop work shows: whether they used the seat isn\'t known.">history deleted</span>' : '') +
+      (p.no_usage_window ? ` <span class="badge warn" title="${esc('Their export holds no usage and covers only ' + (p.window_days === 1 ? 'a single day' : plural(p.window_days || 0, 'day')) + '; re-export with --since.')}">no usage in export</span>` : '');
+    const others = [...(versions[p.person] || [])].filter(v => v !== Number(p.schema_version)).sort((a, b) => a - b);
+    const windows = (p.windows && p.windows.length ? p.windows : (p.window_from && p.window_to ? [[p.window_from, p.window_to]] : []))
+      .map(([a, b]) => `${esc(a)} – ${esc(b)}`).join('<br>') || '? – ?';
+    const gap = p.gap_days ? `<div class="foot-note" style="margin:0" title="${esc((p.gaps || []).map(g => g.join(' – ')).join('; '))}">${esc(plural(p.gap_days, 'day'))} between exports not covered</div>` : '';
+    return `<tr>
     <td title="${esc(p.person)}">${esc(personLabel(p))}<div class="foot-note" style="margin:0">${esc(p.person)}</div></td>
     <td>${esc(seat)}</td><td>${esc(usage)}</td><td>${esc(p.extra_usage_enabled || '—')}</td>
     ${seatUseCell(r)}
-    <td>${esc(lastActive)}${r.idle ? ' <span class="badge warn">idle</span>' : ''}${note}</td>
+    <td>${esc(lastActive)}${badges}${note}</td>
     <td class="num">${num(r.sessions, fmtInt)}</td><td class="num">${num(r.cost, fmtCost0)}</td>
     <td class="num">${fmtPct(r.subShare)}</td><td class="num">${num(r.prs, fmtInt)}</td>
     <td class="num">${r.seatCost == null ? '—' : fmtCost0(r.seatCost)}</td>
     <td class="num">${r.value == null ? '—' : `<strong>${fmtX(r.value)}</strong>`}</td>
     <td class="num">${num(r.retries, fmtInt)}</td>
     <td>${p.cli_history_truncated === 'yes' ? `<span class="badge warn">from ${esc(p.cli_history_from)}</span>` : 'complete'}</td>
-    <td>${esc(p.window_from || '?')} – ${esc(p.window_to || '?')}</td>
+    <td>${windows}${gap}</td>
     <td class="num">${fmtInt(p.exports)}${p.machines > 1 ? `<div class="foot-note" style="margin:0">${fmtInt(p.machines)} machines</div>` : ''}</td>
-    <td class="num">${esc(p.schema_version)}</td></tr>`; }).join('');
+    <td class="num">${esc(p.schema_version)}${others.length ? `<div class="foot-note" style="margin:0">also ${esc(others.join(', '))}</div>` : ''}</td></tr>`; }).join('');
 }
 
 function renderSources() {
   const tbody = document.querySelector('#sourcesTable tbody');
   const rows = PAYLOAD.sources.filter(s => personOk(s.person));
-  if (!rows.length) { tbody.innerHTML = emptyRow(7, 'No exports.'); return; }
-  tbody.innerHTML = rows.map(s => `<tr><td>${esc(s.person)}</td><td>${esc(s.source)}</td>
-    <td>${esc(fmtWhen(s.exported_at))}</td><td>${esc(s.window_from || '?')} – ${esc(s.window_to || '?')}</td>
+  // Exports left out whole (a file that couldn't be used) are listed too: they are not
+  // in the figures, and the person is missing from them. With a person filter they stay.
+  const skipped = (PAYLOAD.skipped || []);
+  if (!rows.length && !skipped.length) { tbody.innerHTML = emptyRow(7, 'No exports.'); return; }
+  const who = s => {
+    const name = nameOf(s.person);
+    return esc(name) + (name !== s.person ? `<div class="foot-note" style="margin:0">${esc(s.person)}</div>` : '');
+  };
+  tbody.innerHTML = rows.map(s => `<tr><td>${who(s)}</td><td>${esc(s.source)}</td>
+    <td>${esc(fmtAsWritten(s.exported_at))}</td><td>${esc(s.window_from || '?')} – ${esc(s.window_to || '?')}</td>
     <td class="num">${esc(s.schema_version)}</td><td><code>${esc(s.machine_id || '—')}</code></td>
-    <td>${esc(s.files.join(', '))}</td></tr>`).join('');
+    <td>${esc(s.files.join(', '))}</td></tr>`).join('') +
+    skipped.map(k => `<tr><td>${esc(k.person)}</td><td>${esc(k.source)}</td>
+    <td colspan="5"><span class="badge warn">skipped</span> ${esc(k.reason)}: not in any figure on this page.</td></tr>`).join('');
 }
 
 // ---------------------------------------------------------------- wiring

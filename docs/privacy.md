@@ -3,7 +3,7 @@
 The parser only ever keeps: token/usage numbers, model names, timestamps,
 tool/skill *names*, session titles, each session's working-directory path (the
 project), PR links, and environment metadata (CLI version, git branch,
-permission mode). For a subagent it also keeps its type and its short
+permission mode, taken from the mode each of your prompts was sent in). For a subagent it also keeps its type and its short
 description, the label Claude wrote when it started the subagent, cut to 120
 characters; `--redact` removes it from a shared dashboard and no CSV carries
 it. Message text, tool inputs/outputs, and prompt history are never kept —
@@ -47,9 +47,39 @@ Each is decided in memory, and only the result is kept:
   keeps only those two numbers. `tests/test_subagent_undercount.py` asserts
   the text never reaches the parsed facts.
 - **Note edits.** An edited file's path is tested for being prose (`.md`,
-  `.txt`, `.rst` and the like) or one of Claude Code's own files (anything under
-  a `.claude` folder), so writing a memory file after the last test doesn't
-  count as an unchecked edit. Only the yes/no is kept; the path is never stored.
+  `.txt`, `.rst` and the like), an image (`.svg`), one of Claude Code's own files
+  (anything under a `.claude` folder, except a Claude Code worktree,
+  `<repo>/.claude/worktrees/<name>/`, which is a checkout of your project and is
+  code), a throwaway file in a temp or scratch
+  folder, or a file outside the folder the session runs in, so writing a memory
+  file or a scratch script after the last test doesn't count as an unchecked
+  edit. Only the yes/no is kept; the path is never stored.
+- **Lines changed, measured in memory.** An edit's result carries the diff it
+  made. The parser counts its `+` and `-` lines (for a file the call created, the
+  lines of its content) and keeps only those two numbers, with the edit's time:
+  never a line, a path or any file content. A subagent's edit result carries no
+  diff, so for those (and only those) the parser reads the call's own input in
+  memory: it compares an Edit's or MultiEdit's old and new text, counts a Write's
+  content lines or a NotebookEdit's new-source lines, keeps the two numbers and
+  drops the text on the spot. The call is matched to its result by the tool-use
+  id, and counted only when the result is neither an error nor a refusal. This replaces Claude Code's own
+  `totalLinesAdded`/`totalLinesRemoved` counter, which has no time. Like response
+  size, it is a count taken from content in memory; `tests/test_p3_backend.py`
+  plants a sentinel in a diff and asserts it reaches neither the payload nor the
+  parse cache.
+- **Slash commands that start a skill.** A record that starts with
+  `<command-name>` (optionally after Claude Code's own `<command-message>`
+  element) has its command name (`next-task`, not what was typed after it) read
+  and kept, so a skill started that way counts as used. Which names are skills
+  isn't known until every file has been read, so the parse cache keeps the name
+  of every slash command you ran (a custom command is named by you: `/deploy-acme`
+  is a name). The aggregate then uses only the names that are also a skill seen
+  elsewhere in your logs (a Skill tool call or a request attributed to it);
+  `/model`, `/compact` and the like never reach the payload, `data.json`, a static
+  build or any CSV. The arguments are never read. The sentinel test covers both.
+- **Refusals.** A tool result flagged with Claude Code's own `toolDenialKind` is
+  recorded as a refusal (the call, not its content), so it isn't counted as an
+  error.
 
 The health measures otherwise read only metadata Claude Code writes alongside
 the conversation: who sent a prompt (you, another session, a background task),
@@ -91,8 +121,15 @@ treated as untrusted text.
 **Before sharing a `--static` build**, pass `--redact`. It replaces session
 titles with ids, drops subagent descriptions, and aliases project paths, git
 branch names and PR repositories/URLs — all of which otherwise carry absolute
-filesystem paths and client or feature names. Skill, MCP server, tool and
-subagent-type names are kept. `data.json` is never redacted.
+filesystem paths and client or feature names. The branch name `HEAD` (git's name
+for a detached checkout) is kept: it names nothing, and the dashboard shows it as
+"(detached)". The build time is written in UTC, so it no longer carries your
+machine's UTC offset. The usage, tool and health times are still in the zone the
+data was built in (they are what puts a request on a day), and the session start
+times are UTC, so a reader who lines the two up can work out your time zone; the
+redaction does not hide where you are, only what you worked on. Skill, MCP server, tool and subagent-type names are kept
+(and the names of the slash commands that matched a skill). `data.json` is never
+redacted.
 
 **The CSV export is different, and deliberately so.** It identifies you by email
 and includes session titles, full project paths, branch names and PR links,
