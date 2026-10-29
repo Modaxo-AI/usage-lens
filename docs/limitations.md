@@ -1,8 +1,9 @@
 # Known limitations
 
-- **Subagent output is imputed from Claude Code 2.1.284 on.** From that build,
-  88–97% of subagent responses reach the transcript with only a placeholder
-  output count (2–20 tokens), not the final one (anthropics/claude-code#84223).
+- **Subagent output is imputed for Claude Code 2.1.284 to 2.1.306.** In those
+  builds (2.1.307 fixed it), 88–97% of subagent responses reached the
+  transcript with only a placeholder output count (2–20 tokens), not the final
+  one (anthropics/claude-code#84223).
   On one session that put Sonnet's output at about 2% of Claude Code's own
   count, and the estimate 27% low. The output of
   such a response is now estimated from how much it wrote: its text, its tool
@@ -63,23 +64,41 @@
   figure where a counter exists.
 
   Any tool that reads only the transcripts shares the unlogged-call gap; ccusage
-  does. The **Estimate vs CLI-reported cost** table on the Overview tab shows the
-  per-model comparison for your own logs. A large positive gap there is the
-  counter resetting on resume (see [Cost estimates](cost.md)).
+  does. The **Logged here vs Claude Code's own counter** table on the Overview tab shows the
+  per-model comparison for your own logs, over each counter's own window (see
+  [Cost estimates](cost.md)).
 
-- **Claude Code's own `/stats` reads about twice this tool's token total.** It
-  adds up every transcript line, and one response is written as one line per
-  part (thinking, text, each tool call), each repeating the response's full
-  usage. This tool counts each response once by its `message.id`, which is
-  Anthropic's documented rule. See anthropics/claude-code#91775.
+- **Claude Code's own `/stats` has been reported to read about twice this
+  tool's token total** (anthropics/claude-code#91775), consistent with adding
+  up every transcript line: one response is written as one line per part
+  (thinking, text, each tool call), each repeating the response's full usage.
+  This tool counts each response once by its `message.id`, which is Anthropic's
+  documented rule ("deduplicate by ID", Agent SDK cost-tracking guide).
+
+- **US-only inference isn't priced.** A request made with US-only inference
+  (`inference_geo`) costs 1.1× on Claude 4.6 and later models. The logs don't
+  show which requests used it, so they are priced at standard rates; Claude
+  Code's own counter does apply it.
 
 - **The allowance is estimated, not reported.** Claude Code's logs never record
   a running "% of weekly allowance used" — the `rateLimits` field on API errors
   is always empty — so the allowance is inferred from list-price usage at the
-  moment the weekly limit was last hit. It is Claude Code's share only: the same
-  weekly limit also counts Claude chat usage, which isn't in these logs. Treat
-  it as approximate until several weeks of hits agree, and expect it to read
-  blank for anyone who has never hit the limit.
+  moment the weekly limit was last hit. That is rough: one hit is a single data
+  point, and list-price dollars aren't a steady measure of the allowance, because
+  the model mix changes what a request counts for. On one real log set a
+  completed week with no limit notice had used about 30% more at list price than
+  the hit week, so the dashboard shows the estimate rounded (≈$1.2k, not
+  $1,237.73), says how many hits it rests on ("from 1 weekly-limit hit"), and
+  widens it to a range, from the usage at the hit to the highest completed week
+  without a hit, when such a week used more. It then calls the estimate
+  contradicted. The share used is stated, not graded ("about 5% of the estimate",
+  not "on track"). It is Claude Code's share only: the same weekly limit also
+  counts Claude chat usage, which isn't in these logs. Treat it as approximate
+  until several weeks of hits agree, and expect it to read blank for anyone who
+  has never hit the limit. Week boundaries step from the last reset by wall-clock
+  time, so a daylight-saving change doesn't move them by an hour, but the zone is
+  this machine's: the notice's own zone isn't kept, so a machine in a different
+  zone from the notice can be an hour out across one zone's change.
 - **The Skills tab charts skill-attributed work only.** A request carries an
   `attributionSkill` tag only when it ran inside a skill; everything else is
   unattributed, and on a real log set that is ~91% of cost. Charting it

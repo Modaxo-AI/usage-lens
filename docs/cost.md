@@ -154,35 +154,77 @@ sessions that started and ended inside the selected dates. A session that began
 before the range, or ran past its end, is left out rather than having its whole
 total credited to the range.
 
-Read the result with one caveat: **the CLI's counter restarts from zero whenever a
-session is resumed**, so it under-reports long sessions — a large positive Δ is
-expected there, not a bug.
+**Like with like.** The counter covers the requests made from its `startTime` to
+its last snapshot, so the estimate side is limited to the same window: the
+requests in the files of the session (and of every transcript sharing its
+counter, subagents included) timed from the counter's start to that snapshot,
+priced at the table's rates. It counts every request those files hold, whichever
+file won it in the dedupe: a continuation that copied the original wins the
+shared requests, but the counter saw them in the original. Comparing the counter
+with everything the session won, over its whole life, set one window against
+another: on real logs Opus 5 read +223% instead of −4.6%, and a model whose
+counter was a 2-minute resume months after the work read −100%.
 
-The opposite effect is handled for you. A branched or resumed transcript can
-*carry on* its parent's counter instead (same `startTime`) — on a real log set a
-76-request branch carried its parent's whole counter. Counting each transcript's
-snapshot made the CLI side read up to twice the truth (Opus 5.5 showed −49%;
-counted once it is −3%), and inflated lines changed and CLI-reported cost in the
-export by 63% and 70%. Transcripts sharing a counter are now grouped: the
-counter's latest snapshot is shown once, on the session that did most of the
-work, and compared with all of the group's requests. The other transcripts show
-"shared" in the CLI column and carry no lines or CLI cost of their own. Where the session hasn't been resumed the two agree
-closely; on a representative local log set the most recent model reconciled to
-within 2.7%, and one model matched to the cent. The CLI figure includes
-subagent usage. From Claude Code 2.1.284 the subagent transcripts lose their
-output counts, which is handled below.
+The panel has three groups of columns:
+
+- **Tokens**: *Logged here* (the transcripts' tokens in the window) against
+  *Claude Code counted* (the counter's). This tests coverage, not rates.
+- **Cost**: *Logged here* at the table's rates against *Claude Code's $*, the
+  counter's own `costUSD`.
+- **Rate check**: *Its tokens at list price*, the counter's own tokens priced at
+  the table's rates, against *Claude Code's $*. The counter doesn't split its cache
+  writes, so they take the transcripts' own 5-minute/1-hour split for that model in
+  the window (all 5-minute when the transcripts have none); priced all as 5-minute,
+  they would read low wherever Claude Code wrote the dearer 1-hour cache. No
+  prompt-length tier applies (the tokens are sums). This tests the rate table, and
+  is the only column that does; its accuracy rests on that split. On a real log
+  set it reproduces Claude Code's own dollars to within 0.1% for Opus 5.5, Opus 5,
+  Sonnet 5 and Fable. Two known differences remain: Claude Code prices Sonnet 5.5
+  cache reads at $0.20/MTok against the published $0.10 (about 30% here), and
+  Haiku 5.5's higher rates over 100,000 prompt tokens can't be applied to summed
+  tokens, so its re-priced figure reads low.
+
+In the payload, `cli_repriced` is that figure, on each `cli_models` row and each
+`reconciliation` row; `est_cost` and `est_tokens` are the window's figures.
+
+How to read the Δ:
+
+- **Positive** (tokens or cost): the transcripts hold calls the counter didn't.
+  The usual cause is a counter that restarted when a session was resumed, in a
+  Claude Code build before 2.1.277, which fixed the reset ("Fixed a headless
+  resume … starting the session's cost and usage totals at zero").
+- **Negative**: the counter saw calls no transcript holds. Those are priced
+  separately as "not in transcripts" (`est_cost_unlogged`) and are not part of
+  the estimate.
+- **A difference in the rate check**: Claude Code charges a rate other than the
+  published one, for example Sonnet 5.5 cache reads at $0.20/MTok against the
+  published $0.10 (see [limitations](limitations.md)). A close match in the Cost
+  group is not evidence for the rate table, since a coverage gap and a rate
+  difference can cancel; the rate check is.
+
+A branched or resumed transcript can also *carry on* its parent's counter (same
+`startTime`); on a real log set a 76-request branch carried its parent's whole
+counter. Counting each transcript's snapshot made the CLI side read up to twice
+the truth (Opus 5.5 showed −49%; counted once it is −3%), and inflated lines
+changed and CLI-reported cost in the export by 63% and 70%. Transcripts sharing
+a counter are grouped: the counter's latest snapshot is shown once, on the
+session that did most of the work, and compared with all of the group's
+requests. The other transcripts show "shared" in the CLI column and carry no
+lines or CLI cost of their own. The CLI figure includes subagent usage. From
+Claude Code 2.1.284 until 2.1.307 the subagent transcripts lost their output
+counts, which is handled below.
 
 ## Subagent output and calls the transcripts miss
 
 Two things make a transcript total read low. The tool corrects the first and
 shows the second separately.
 
-**Subagent output is imputed.** From Claude Code 2.1.284 a subagent response is
-written as one line per content block, and every line carries the usage from
-the *start* of the stream (2–20 output tokens). The final line is never
-written. That was 88–97% of subagent responses in builds 2.1.284–2.1.295, in
-the desktop app and the CLI alike; main-thread responses always get their
-final line. Input and cache tokens on those lines are right; only output is
+**Subagent output is imputed.** From Claude Code 2.1.284 until 2.1.307 fixed it,
+a subagent response was written as one line per content block, every line
+carrying the usage from the *start* of the stream (2–20 output tokens), and
+the final line was never written. That was 88–97% of subagent responses in
+builds 2.1.284–2.1.295, in the desktop app and the CLI alike; main-thread
+responses always got their final line. Input and cache tokens on those lines are right; only output is
 wrong.
 
 The text, tool calls and thinking signature of each response are still in the

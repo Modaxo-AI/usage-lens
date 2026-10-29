@@ -37,8 +37,9 @@ Each is decided in memory, and only the result is kept:
   a slash command, its output or a `!` shell command (`<command-name>`,
   `<local-command-stdout>`, `<bash-input>` and the like) is not counted as a
   prompt. Only the prefix is tested.
-- **Response size.** Since Claude Code 2.1.284, most subagent responses are
-  written to the transcript with only a placeholder output count, so their
+- **Response size.** From Claude Code 2.1.284 until 2.1.307 fixed it, most
+  subagent responses were written to the transcript with only a placeholder
+  output count, so their
   output is estimated from how much each response wrote (see
   [Cost estimates](cost.md#subagent-output-and-calls-the-transcripts-miss)).
   For every response the parser counts, in memory, the characters of its text,

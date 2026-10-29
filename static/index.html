@@ -116,7 +116,7 @@
         <a class="habits-more" href="#habits">Open Habits &rarr;</a>
       </div>
       <div class="habit-grid" id="habitsStrip"></div>
-      <p class="foot-note">Each habit is priced or counted on its own; there is no overall score. A status appears only where Anthropic gives a line to measure against: its <code>/usage</code> flags long context and cache misses at 10% of recent usage (this tool's cache card counts expiry misses only), and it publishes ~$13 per active day as the average and $30 as the 90th percentile. Hover a card for how it is measured. These are for you; they are not a performance measure.</p>
+      <p class="foot-note">Each habit is priced or counted on its own; there is no overall score. A badge appears only where Anthropic gives a line to measure against. Its <code>/usage</code> flags long context and cache misses at 10% of recent usage; this tool applies that 10% line to its own measures (requests over 500k tokens; the cost of re-caching after the cache expired, expiry misses only), so those badges are the tool's reading, not Anthropic's verdict. Anthropic publishes ~$13 per active day as the average and $30 as the 90th percentile across its deployments: the spend badge shows where you sit against them, and neither is a target. Hover a card for how it is measured. These are for you; they are not a performance measure.</p>
     </div>
     <div class="card">
       <div class="card-head">
@@ -148,7 +148,7 @@
       <div class="legend" id="tokenTypeLegend"></div>
     </div>
     <div class="card">
-      <div class="card-head"><h2>Estimate vs CLI-reported cost</h2></div>
+      <div class="card-head"><h2>Logged here vs Claude Code's own counter</h2></div>
       <div id="reconcileWrap"></div>
     </div>
     <div class="card">
@@ -161,7 +161,7 @@
           </table>
         </div>
       </div>
-      <p class="foot-note">Costs are estimates from public Anthropic API list pricing; the 1h cache-write rate is taken as 2&times; input, Anthropic's published multiplier. Fast-mode requests are priced at 2&times; and Batch-tier requests at 0.5&times;. Each API response is counted once, by its message id, across every transcript — Claude Code writes one line per part of a response, each repeating the full usage, and its own <code>/stats</code> counts them all (streamed snapshots keep only the largest output; a fork/resume copy yields to the original). Includes subagents. Web search and fetch results are priced as the input tokens they become; only the unlogged lookup request itself is not.</p>
+      <p class="foot-note">Costs are estimates from public Anthropic API list pricing; the 1h cache-write rate is taken as 2&times; input, Anthropic's published multiplier. Fast-mode requests are priced at 2&times; and Batch-tier requests at 0.5&times;. Each API response is counted once, by its message id, across every transcript — Claude Code writes one line per part of a response, each repeating the full usage, which is why a count of lines reads high (streamed snapshots keep only the largest output; a fork/resume copy yields to the original). Includes subagents. Web search and fetch results are priced as the input tokens they add to the conversation; the search itself (billed per search on the API) and WebFetch's separate page-reading model call aren't in the transcripts. US-only inference (1.1&times;) isn't modelled.</p>
     </div>
   </div>
 
@@ -272,7 +272,7 @@
         <div class="card-head"><h2>Main-conversation spend by context size</h2><span class="foot-note" style="margin:0;" id="grainNoteHabits"></span></div>
         <div class="chart-box"><canvas id="habitContextChart"></canvas></div>
         <div class="legend" id="habitContextLegend"></div>
-        <p class="foot-note">Every request re-sends the whole conversation, so a long session costs more per message and, per Anthropic, gets less reliable as it fills. Requests over 200k tokens count as long context here: that line is ours, taken from the long-context tier in Anthropic's pricing. <code>/clear</code> between unrelated tasks keeps the 200k+ bands small.</p>
+        <p class="foot-note">Every request re-sends the whole conversation, so a long session costs more per message and, per <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents" target="_blank" rel="noopener">Anthropic's context-engineering post</a>, recall decreases as tokens grow: a performance gradient rather than a hard cliff. The 200k and 500k lines are this tool's own, not Anthropic's: its pricing has no tier at either (Claude 4.6 and later include the 1M window at standard pricing). Running out of room is rarer with 1M windows and automatic compaction, but <code>/clear</code> between unrelated tasks still keeps the large bands small.</p>
       </div>
       <div class="two-col">
         <div class="card">
@@ -283,7 +283,7 @@
         <div class="card">
           <div class="card-head"><h2>Permission mode when you prompted</h2></div>
           <div class="chart-box short"><canvas id="habitModeChart"></canvas></div>
-          <p class="foot-note">Plan mode is worth it for multi-file or unfamiliar work, and overhead for a one-line fix.</p>
+          <p class="foot-note">Anthropic's <a href="https://code.claude.com/docs/en/costs" target="_blank" rel="noopener">costs page</a>: &ldquo;Use plan mode for complex tasks.&rdquo;</p>
         </div>
       </div>
       <div class="card">

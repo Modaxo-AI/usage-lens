@@ -118,8 +118,9 @@ This is what the team view's *Friction by integration* table is built from.
 
 ### Imputed output and unlogged cost (schema 9)
 
-Since Claude Code 2.1.284, most subagent responses reach the transcript with
-only a placeholder output count (2–20 tokens), never the final one. From
+From Claude Code 2.1.284 until 2.1.307 fixed it, most subagent responses
+reached the transcript with only a placeholder output count (2–20 tokens),
+never the final one. From
 schema 9:
 
 | Column | Sheets | What it is |

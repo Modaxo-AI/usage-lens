@@ -61,8 +61,10 @@ _NOT_PROMPT_PREFIXES = (
 # Bumped whenever FileFacts gains or changes a field, or what parsing reads
 # from a file changes, so a cache written by an older build is discarded instead
 # of silently serving a payload with holes in it. 17: a file starting with a
-# byte-order mark no longer loses its first record.
-FACTS_VERSION = 17
+# byte-order mark no longer loses its first record. 18: requests record whether
+# a thinking count was logged; a timestamp-less repeat of a tool call no longer
+# erases the call's real time.
+FACTS_VERSION = 18
 
 
 # Re-exported here: the parser is where untrusted fields are read.
@@ -506,6 +508,10 @@ def parse_file(path: str, kind: str):
                         "cache_write_1h": _tok(cache_creation.get("ephemeral_1h_input_tokens")),
                         "cache_write_fallback": _tok(usage.get("cache_creation_input_tokens")),
                         "thinking_tokens": _tok(otd.get("thinking_tokens")),
+                        # Whether the response logged a thinking count at all:
+                        # placeholder subagent lines and older builds don't, so
+                        # their thinking is unknown rather than zero.
+                        "thinking_logged": "thinking_tokens" in otd,
                         "web_search_requests": _tok(stu.get("web_search_requests")),
                         "web_fetch_requests": _tok(stu.get("web_fetch_requests")),
                         # Billing modifiers: fast mode is premium-priced, batch is
@@ -527,7 +533,12 @@ def parse_file(path: str, kind: str):
                         name = _name(block.get("name"))
                         if bid and name:
                             facts.tool_calls[bid] = name
-                            facts.tool_ts[bid] = ts
+                            # An api-request-blob repeats the call with no
+                            # timestamp: keep the real one, never overwrite it
+                            # with None (the call would move to the session's
+                            # first day).
+                            if ts or bid not in facts.tool_ts:
+                                facts.tool_ts[bid] = ts
                             if name == "Skill":
                                 skill = _name(_dict(block.get("input")).get("skill"))
                                 if skill:

@@ -273,35 +273,91 @@ def build_episodes(events, requests, now=None):
 # allowance burn
 # --------------------------------------------------------------------------- #
 
-def allowance_snapshot(episodes, requests, now=None):
+def _step_weeks(moment, weeks, tz=None):
+    """``moment`` moved by whole weeks, keeping its wall-clock time in ``tz``.
+
+    The weekly limit resets at the same clock time every week ("4am"), so across
+    a daylight-saving change the next reset is 167 or 169 hours on, not 168.
+    ``tz`` None is the machine's zone, the same assumption parse_reset makes when
+    a notice names no zone: the notice's own zone isn't kept with the reset.
+    """
+    local = moment.astimezone(tz) if tz is not None else moment.astimezone()
+    naive = local.replace(tzinfo=None) + _dt.timedelta(days=7 * weeks)
+    return _wall_clock(naive, tz)
+
+
+def _week_containing(anchor, now, tz=None):
+    """(start, end) of the weekly window that holds ``now``, stepping from a
+    known reset ``anchor`` by whole weeks of wall-clock time."""
+    n = int((now - anchor).total_seconds() // (7 * 24 * 3600))
+    end = _step_weeks(anchor, n, tz)
+    while end <= now:
+        n += 1
+        end = _step_weeks(anchor, n, tz)
+    while _step_weeks(anchor, n - 1, tz) > now:
+        n -= 1
+        end = _step_weeks(anchor, n, tz)
+    return _step_weeks(anchor, n - 1, tz), end
+
+
+def _clear_weeks(this_start, weekly_episodes, first_request, reqs, tz=None):
+    """[(week start, list-price usage)] for the completed limit weeks before the
+    one starting at ``this_start`` that had no weekly-limit notice. A week that
+    began before the first request in the logs is left out: its usage is only
+    partly seen."""
+    out = []
+    if first_request is None:
+        return out
+    end = this_start
+    while True:
+        start = _step_weeks(end, -1, tz)
+        if start < first_request:
+            return out
+        hit = False
+        for e in weekly_episodes:
+            hit_at, resets = _parse_iso(e.get("hit_at")), _parse_iso(e.get("resets_at"))
+            if (hit_at is not None and start <= hit_at < end) or (resets is not None and start < resets <= end):
+                hit = True
+                break
+        if not hit:
+            used, _ = reqs.cost_between(start - _dt.timedelta(microseconds=1), end)
+            out.append((start, used))
+        end = start
+
+
+def allowance_snapshot(episodes, requests, now=None, tz=None):
     """Where this week stands against the level at which the weekly limit was
     hit before -- a warning before the lock-out rather than after it.
 
     The allowance is never reported directly, so it is estimated from what
-    Claude Code had used, at list price, when the weekly limit last ran out.
-    Returns None when the weekly limit has never been hit: there is nothing to
-    calibrate against.
+    Claude Code had used, at list price, when the weekly limit last ran out. That
+    is a rough figure: one hit is one data point, and list-price dollars don't
+    track the allowance steadily (the model mix changes what a request costs
+    against it). So the snapshot also says how many hits it rests on, and the
+    most that any completed week *without* a weekly-limit notice used: when that
+    exceeds the estimate the estimate is contradicted, and the real figure lies
+    somewhere in ``allowance_est_usd`` to ``allowance_high_usd``.
+
+    Weeks step from the last known reset by wall-clock time in ``tz`` (None: the
+    machine's zone), so a daylight-saving change doesn't move a boundary by an
+    hour. Returns None when the weekly limit has never been hit: there is
+    nothing to calibrate against.
     """
     now = now or _dt.datetime.now(_dt.timezone.utc)
-    weekly = [e for e in episodes if e["kind"] == WEEKLY
-              and e["resets_at"] and e["usage_before_hit_usd"]]
+    all_weekly = [e for e in episodes if e["kind"] == WEEKLY]
+    weekly = [e for e in all_weekly if e["resets_at"] and e["usage_before_hit_usd"]]
     if not weekly:
         return None
     latest = max(weekly, key=lambda e: e["hit_at"])
     allowance = latest["usage_before_hit_usd"]
 
-    # The weekly limit resets at the same moment every week; step from the
+    # The weekly limit resets at the same clock time every week; step from the
     # last known reset to the window containing now.
     anchor = _parse_iso(latest["resets_at"])
-    week = _dt.timedelta(days=7)
-    end = anchor
-    while end <= now:
-        end += week
-    while end - week > now:
-        end -= week
-    start = end - week
+    start, end = _week_containing(anchor, now, tz)
 
-    used, _ = _Requests(requests).cost_between(start - _dt.timedelta(microseconds=1), now)
+    reqs = _Requests(requests)
+    used, _ = reqs.cost_between(start - _dt.timedelta(microseconds=1), now)
     elapsed_h = max((now - start).total_seconds() / 3600, 1e-9)
     projected = None
     status = "on_track"
@@ -314,13 +370,26 @@ def allowance_snapshot(episodes, requests, now=None):
         if hit_at < end:
             projected = _iso(hit_at)
             status = "on_pace_to_hit"
+
+    clear = _clear_weeks(start, all_weekly, reqs.times[0] if reqs.times else None, reqs, tz)
+    top_start, top_used = max(clear, key=lambda w: w[1]) if clear else (None, 0.0)
+    contradicted = top_used > allowance
     return {
         "allowance_est_usd": round(allowance, 2),
         "calibrated_from": latest["hit_at"],
+        # How many weekly-limit hits the estimate is drawn from (only the latest is used).
+        "weekly_hits": len(weekly),
+        # The most a completed week without a weekly-limit notice used. When it
+        # is more than the estimate, the estimate is contradicted and this is
+        # the top of the range.
+        "allowance_high_usd": round(top_used, 2) if contradicted else None,
+        "high_week_start": _iso(top_start) if contradicted else None,
+        "contradicted": contradicted,
         "week_start": _iso(start),
         "week_end": _iso(end),
         "used_usd": round(used, 2),
         "used_pct": round(used / allowance, 4) if allowance else None,
+        "used_pct_of_high": round(used / top_used, 4) if contradicted and top_used else None,
         "projected_hit_at": projected,
         "status": status,
     }
