@@ -43,6 +43,23 @@ class TestModelIds(unittest.TestCase):
         for name in ("Model", "", ":---", "Batch input", "Claude"):
             self.assertIsNone(pc.model_id(name), name)
 
+    def test_a_note_with_brackets_inside_it(self):
+        # The live page's shape from October 2026: a link whose text holds its
+        # own parenthesised aside, inside the row's note.
+        cases = {
+            "Claude Opus 4.1 ([retired, except on Bedrock and Claude Models on Google Cloud "
+            "(Google managed)](https://x.y))": "claude-opus-4-1",
+            "Claude Opus 4 ([retired, except on Claude Models on Google Cloud (Google managed)]"
+            "(https://x.y))": "claude-opus-4",
+            "Claude Sonnet 4 (retired (a) (b))": "claude-sonnet-4",
+        }
+        for name, expected in cases.items():
+            self.assertEqual(pc.model_id(name), expected, name)
+
+    def test_unbalanced_brackets_are_not_a_model(self):
+        for name in ("Claude Opus 4 (retired", "Claude Opus 4 retired)", "Claude Opus 4 ((retired)"):
+            self.assertIsNone(pc.model_id(name), name)
+
 
 class TestParse(unittest.TestCase):
     def setUp(self):

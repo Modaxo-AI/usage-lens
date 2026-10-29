@@ -81,8 +81,16 @@ def model_id(display_name: str):
     """"Claude Opus 5.5" -> "claude-opus-5-5". None for something that isn't a
     plain model name. Markup around the name ("**Claude Opus 5**", a footnote
     marker, a non-breaking space) is cleaned first, and parenthesised notes
-    ("(retired, ...)", "(for prompts up to 100,000 tokens)") are dropped."""
-    name = re.sub(r"\(.*?\)", "", _clean_name(display_name)).strip().lower()
+    ("(retired, ...)", "(for prompts up to 100,000 tokens)") are dropped --
+    innermost first, so a note with its own brackets inside it goes whole. A
+    bracket left without its partner means it isn't a plain name."""
+    name = _clean_name(display_name)
+    while True:
+        bare = re.sub(r"\([^()]*\)", "", name)
+        if bare == name:
+            break
+        name = bare
+    name = name.strip().lower()
     if not name.startswith("claude "):
         return None
     slug = re.sub(r"[\s.]+", "-", name).strip("-")
