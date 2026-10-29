@@ -43,7 +43,9 @@ Fixes from a full adversarial review of the tool and its docs.
 
 **Other**
 - `serve.py` prints its URL straight away when run in the background, so the
-  plugin's skills can report it. Idle connections time out after 30 seconds.
+  plugin's skills can report it, and starts without a reverse-DNS lookup of
+  127.0.0.1 that took many seconds on some Macs. Idle connections time out
+  after 30 seconds.
 - The skills quote folder paths, so a path with a space works.
 - A git remote's `?query` or `#fragment` is dropped from `project_repo`.
 - CI tests Python 3.10 too, and doesn't keep its token in the checkout.

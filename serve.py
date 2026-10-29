@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import re
+import socketserver
 import threading
 import traceback
 import webbrowser
@@ -133,6 +134,17 @@ def _same_site_request(headers, port: int) -> bool:
         return True
     referer = headers.get("Referer")
     return referer is not None and any(referer == o or referer.startswith(o + "/") for o in own)
+
+
+class LocalServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without its reverse-DNS lookup of the bound address.
+    HTTPServer.server_bind calls socket.getfqdn("127.0.0.1"), which can take
+    many seconds on some Macs and holds up startup; the name is only ever
+    127.0.0.1 here."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -376,7 +388,7 @@ def main():
             parser.error(f"not found: {', '.join(missing)}")
         Handler.team_paths = [os.path.abspath(p) for p in args.team]
         Handler.seat_prices = os.path.abspath(args.seat_prices) if args.seat_prices else None
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    httpd = LocalServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     if args.team:
         # flush: run in the background (as the plugin's skills do), stdout is

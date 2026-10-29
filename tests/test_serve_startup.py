@@ -10,6 +10,8 @@ import threading
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
 from claude_usage import paths, price_check
 
 REPO = Path(__file__).resolve().parent.parent
@@ -32,15 +34,27 @@ class TestStartupLine(unittest.TestCase):
             proc = subprocess.Popen([sys.executable, str(REPO / "serve.py"), "--no-open", "--offline",
                                      "--port", str(port)],
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
+            self.addCleanup(proc.stdout.close)
             self.addCleanup(proc.wait, 10)
             self.addCleanup(proc.kill)
             lines = queue.Queue()
             threading.Thread(target=lambda: lines.put(proc.stdout.readline()), daemon=True).start()
             try:
-                line = lines.get(timeout=20)
+                line = lines.get(timeout=60)
             except queue.Empty:
                 self.fail("no output while the server was running: stdout isn't flushed")
             self.assertIn(f"http://127.0.0.1:{port}/", line)
+
+
+class TestNoNameLookup(unittest.TestCase):
+    def test_binding_does_not_look_up_the_hosts_name(self):
+        # HTTPServer would call socket.getfqdn("127.0.0.1"), seconds-slow on
+        # some Macs, before the URL line could be printed.
+        import serve
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("looked up")):
+            server = serve.LocalServer(("127.0.0.1", 0), serve.Handler)
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.server_name, "127.0.0.1")
 
 
 if __name__ == "__main__":

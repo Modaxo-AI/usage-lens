@@ -743,7 +743,7 @@ class TestServeExport(_Logs):
         self._keep_handler_state()
         with mock.patch.dict(os.environ, {"CLAUDE_USAGE_EXPORT_TZ": "Mars/Phobos"}), \
                 mock.patch.object(sys, "argv", ["serve.py", "--no-open", "--offline", "--port", "0"]), \
-                mock.patch.object(serve, "ThreadingHTTPServer", side_effect=AssertionError("started")), \
+                mock.patch.object(serve, "LocalServer", side_effect=AssertionError("started")), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(SystemExit) as cm:
                 serve.main()
@@ -756,7 +756,7 @@ class TestServeExport(_Logs):
         with mock.patch.dict(os.environ, {"CLAUDE_USAGE_EXPORT_TZ": "Mars/Phobos"}), \
                 mock.patch.object(sys, "argv", ["serve.py", "--no-open", "--offline", "--port", "0",
                                                 "--team", self.tmpdir]), \
-                mock.patch.object(serve, "ThreadingHTTPServer", side_effect=KeyboardInterrupt):
+                mock.patch.object(serve, "LocalServer", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 serve.main()
 
