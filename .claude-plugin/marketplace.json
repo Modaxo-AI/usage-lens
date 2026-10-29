@@ -1,0 +1,15 @@
+{
+  "name": "usage-lens",
+  "owner": {
+    "name": "Modaxo",
+    "url": "https://github.com/Modaxo-AI"
+  },
+  "description": "Usage Lens: a local dashboard for Claude Code usage and cost.",
+  "plugins": [
+    {
+      "name": "usage-lens",
+      "source": "./",
+      "description": "A local dashboard for Claude Code usage and cost, for individuals and teams."
+    }
+  ]
+}

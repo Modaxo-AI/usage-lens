@@ -21,6 +21,20 @@ and no lockfile to keep current. It reads the logs Claude Code already writes to
 `~/.claude/projects/`, so there is nothing to configure and nothing to switch on
 beforehand; whatever you have done so far is already there.
 
+### Or install it as a Claude Code plugin
+
+In Claude Code:
+
+```
+/plugin marketplace add Modaxo-AI/usage-lens
+/plugin install usage-lens@usage-lens
+```
+
+Then `/usage-lens:dashboard` opens your dashboard, `/usage-lens:export` writes
+your export, and `/usage-lens:team <folder>` opens the team dashboard. The
+plugin runs the same code, so everything below applies. Updates arrive through
+`/plugin`; your cache and machine id stay in `~/.usage-lens` across them.
+
 By platform:
 
 - **macOS**: if `python3` asks to install the command line developer tools,

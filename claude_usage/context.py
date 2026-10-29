@@ -22,7 +22,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from . import paths, pricing
+from . import __version__, paths, pricing
 
 # Bumped whenever an export column or file is added, removed or changes
 # meaning. Files written before this column existed are schema 1; schema 2 added
@@ -114,9 +114,12 @@ def _git(*args, cwd=None):
 
 @functools.lru_cache(maxsize=1)
 def tool_version():
-    """This tool's commit. Read from git rather than a constant, because a
-    constant is the thing someone forgets to bump."""
-    return _git("rev-parse", "--short", "HEAD", cwd=REPO_ROOT) or "unknown"
+    """This tool's release, plus its commit when run from a git checkout:
+    "1.0.0+3f2a1bc". The commit tells two builds of one release apart; the
+    release is what a downloaded zip or a plugin install, with no git, still
+    knows ("1.0.0")."""
+    commit = _git("rev-parse", "--short", "HEAD", cwd=REPO_ROOT)
+    return f"{__version__}+{commit}" if commit else __version__
 
 
 @functools.lru_cache(maxsize=1)

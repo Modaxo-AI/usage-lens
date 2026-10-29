@@ -1,0 +1,14 @@
+{
+  "name": "usage-lens",
+  "displayName": "Usage Lens",
+  "version": "1.0.0",
+  "description": "A local dashboard for Claude Code usage and cost: tokens, cache hit rate, spend by model and project, with team roll-ups. Runs on your machine; nothing is uploaded.",
+  "author": {
+    "name": "Modaxo",
+    "url": "https://github.com/Modaxo-AI"
+  },
+  "homepage": "https://github.com/Modaxo-AI/usage-lens",
+  "repository": "https://github.com/Modaxo-AI/usage-lens",
+  "license": "Apache-2.0",
+  "keywords": ["usage", "cost", "tokens", "dashboard", "team"]
+}

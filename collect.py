@@ -273,6 +273,7 @@ def _parse_day(value: str):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version", version=f"Usage Lens {context_mod.tool_version()}")
     parser.add_argument("--static", action="store_true", help="also build a standalone dashboard.html")
     parser.add_argument("--redact", "--redact-titles", dest="redact", action="store_true",
                         help="strip titles, descriptions, project paths, branches and PR links "

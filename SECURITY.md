@@ -9,7 +9,6 @@ of Anthropic's public pricing page (`--offline` turns it off). See
 
 Please don't open a public issue for a security problem. Email
 **madeeh.urrehman@modaxo.com** with what you found, how to reproduce it, and the
-version you ran (`git rev-parse --short HEAD`, or the version shown in the
-dashboard footer). You'll get a reply within five working days.
+version you ran (`python3 serve.py --version`). You'll get a reply within five working days.
 
 Fixes are made on the latest release only.
