@@ -81,10 +81,10 @@ pinned above them. Every figure follows the selected dates:
 
 | Tab | What's in it |
 |---|---|
-| **Overview** | A habits strip (the selected dates against an equal run of days before them), then cost, tokens, sessions, cache savings, cost concentration, median session, usage over time, by project, by model, estimate-vs-CLI reconciliation. |
+| **Overview** | A habits strip (the selected dates against an equal run of days before them), then cost, tokens, sessions, cache savings, cost concentration, median session, usage over time, by project, by model, and what the transcripts logged against Claude Code's own counter. |
 | **Habits** | Whether you're using Claude Code well: spend by context size, cache misses by reason, checks run after edits, refused tool calls, how you prompt, and your recent sessions tagged with the habits that cost them. See [Usage health](docs/usage-health.md). |
 | **Skills** | Cost and invocations per skill, and how much of your work runs inside a skill at all. |
-| **Tools & errors** | Calls and error rate per tool, MCP-server rollup, errors over time. |
+| **Tools & errors** | Calls per tool, errors per tool (most errors first, with the rate), MCP-server rollup, errors over time. |
 | **Agents** | Subagent cost and tokens by type, spawn depth, main-vs-subagent over time. |
 | **Sessions** | Sortable table with estimated vs. CLI-reported cost, lines changed and PR links, plus an active-time-vs-cost scatter. |
 | **Output & env** | Lines changed, PRs, desktop vs. CLI, CLI versions, branches, permission modes. |

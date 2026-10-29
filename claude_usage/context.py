@@ -37,8 +37,9 @@ from . import __version__, paths, pricing
 # est_cost_* column now include) and est_cost_unlogged_usd; schema 10 added
 # very_long_context_cost_usd (main-conversation spend on requests over 500k
 # tokens) to the summary and sessions sheets; schema 11 added week_active_days
-# (the person's distinct active days in each week) to the summary sheet.
-EXPORT_SCHEMA_VERSION = 11
+# (the person's distinct active days in each week) to the summary sheet; schema
+# 12 stopped counting transcripts that never got a reply in sessions_started.
+EXPORT_SCHEMA_VERSION = 12
 
 # The team-wide zone exports bucket their days and weeks in: `--tz`, else this
 # variable, else UTC. Never the machine's own zone, so the same logs exported

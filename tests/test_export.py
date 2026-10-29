@@ -190,7 +190,8 @@ class TestReconciliation(unittest.TestCase):
         self.assertAlmostEqual(total, sum(r[15] for r in self.payload["usage"]), places=6)
 
     def test_sessions_started_matches_non_fork_sessions(self):
-        real = [s for s in self.payload["sessions"] if not s["derived"]]
+        # Transcripts that never got a reply aren't sessions (schema 12).
+        real = [s for s in self.payload["sessions"] if not s["derived"] and s.get("requests", 1)]
         self.assertEqual(self._sum("sessions_started", int), len(real))
 
 
@@ -838,7 +839,7 @@ class TestLocalSessionDates(unittest.TestCase):
         def zone_day(ts):
             moment = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
             return moment.astimezone(self.ZONE[0]).date().isoformat()
-        expected = sum(1 for x in self.payload["sessions"] if not x.get("derived")
+        expected = sum(1 for x in self.payload["sessions"] if not x.get("derived") and x.get("requests", 1)
                        and "2026-02-02" <= zone_day(x["start"]) <= "2026-02-08")
         self.assertEqual(sum(int(r["sessions_started"]) for r in rows), expected)
 

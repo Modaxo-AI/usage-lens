@@ -34,9 +34,15 @@ discriminating, not as norms.
 
 ## 1. What the evidence says good use looks like
 
-**Context is the resource to manage.** Anthropic's best-practices guide is built
-on one constraint: the context window fills fast, and quality degrades as it
-fills. Its named failure patterns are:
+**Context is a resource to manage, though less urgently than it was.** Anthropic's
+[context-engineering post](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+says recall decreases as the number of tokens grows, "a performance gradient
+rather than a hard cliff". The best-practices guide used to be built on the
+constraint that the window fills fast; it now lists "The context window is your
+main constraint" under "What you can stop doing", because running out is rare with
+1M windows and automatic compaction. `/clear` between unrelated tasks is still
+worth doing, and every request still re-sends the whole conversation, so a long
+one costs more per message. The failure patterns the guide names are:
 
 | Pattern | Anthropic's fix | Visible in logs? |
 |---|---|---|
@@ -44,7 +50,7 @@ fills. Its named failure patterns are:
 | Correcting over and over | "After two failed corrections, `/clear`" | Partly: interrupts and rejections, not the words |
 | The over-specified CLAUDE.md | Prune; keep it under 200 lines | Partly: whether a project CLAUDE.md is loaded |
 | The trust-then-verify gap (no tests or checks) | Always give Claude a check it can run | Only with a privacy decision (§4) |
-| The infinite exploration | Scope it, or use subagents | Yes: main-thread reads vs subagent delegation |
+| The infinite exploration | Scope it. The guide's current subagent guidance is parallel work, noisy output and independent review (it no longer says "use subagents to protect your context window") | Yes: main-thread reads vs subagent delegation |
 
 **Cost has published anchors.** Across enterprise deployments the average is
 about **$13 per developer per active day**, under **$30 for 90% of users**, and
@@ -75,7 +81,9 @@ reuses it.
 
 **Self-perception is unreliable, and activity metrics get gamed:**
 - METR's 2025 trial found experienced developers 19% *slower* with AI while
-  believing they were 20% faster.
+  believing they were 20% faster. METR now calls that result outdated (its Feb 2026
+  update, linked under Sources), so cite it as a caution about self-perception,
+  not as a current measure of speed.
 - Acceptance rate tracks how productive people *feel* (Ziegler et al., 2022).
 - DORA warns that metrics made into goals invite gaming.
 - SPACE says activity metrics should never be used alone to reward or penalise.
@@ -117,7 +125,7 @@ All are pure metadata. "New fields" means fields `parser.py` does not read today
 | **What** | Share of main-thread cost spent on requests carrying a large context; peak context per session; automatic vs manual compactions |
 | **Fields** | Tokens per request (already read). New: `isSidechain`, `compactMetadata.trigger`, `postTokens` |
 | **Example** | Median request context **350k** tokens. **50%** of main-thread cost comes from requests over 500k, which cost about **4×** a small-context request. Auto-compactions outnumber manual ones, firing near the top of the window. `/clear` used in only a few sessions |
-| **Flag** | Anthropic's 10% rule: long context at ≥10% of recent spend. "Long" means a request carrying more than **500k** tokens. On 1M-context models a 200k cutoff flagged everyone (nearly every user), so it stopped separating anyone. The 200k share, Anthropic's long-context pricing line, stays as a shown, unflagged figure. No source gives a cutoff for Claude Code, so 500k is ours to tune |
+| **Flag** | Anthropic's 10% rule, applied by this tool to its own measure: long context at ≥10% of recent spend. The badge says so ("Under 10%" / "10% or more"); it is the tool's reading, not Anthropic's verdict. "Long" means a request carrying more than **500k** tokens. On 1M-context models a 200k cutoff flagged everyone (nearly every user), so it stopped separating anyone. The 200k share stays as a shown, unflagged figure. Neither line is Anthropic's: its pricing has no 200k tier (Claude 4.6 and later include the 1M window at standard pricing; Haiku 5.5's over-100k tier is the only length tier), and no source gives a cutoff for Claude Code. Both are ours to tune |
 | **Fix shown** | `/clear` between tasks; for big features, write a spec, then start a fresh session (best practices) |
 
 The cutoff is an absolute token count rather than a share of the model's window.
@@ -131,7 +139,7 @@ the window size, which the logs don't record (`stats-cache.json` stores 0).
 | **What** | Dollars spent re-writing the cache when a large session is resumed after its cache expired, broken down by Claude Code's own reason for the miss |
 | **Fields** | Tokens and timestamps (already read). New: `message.diagnostics.cache_miss_reason.type` |
 | **Example** | **85%** of requests after a >1 h gap rebuilt the cache. Priced at each rebuild's actual cache-write rate, using Claude Code's own count of missed tokens, expiry cost **11% of all spend**: past Anthropic's 10% line. Labelled reasons, most to fewest: `previous_message_not_found` (expiry), `messages_changed`, `system_changed`, `model_changed`, `tools_changed` |
-| **Flag** | Anthropic's 10% rule, applied to expiry misses only (`previous_message_not_found`): the cache-expiry cost at ≥10% of recent spend. Misses with another reason are shown but don't count toward the flag |
+| **Flag** | Anthropic's 10% rule, applied by this tool to its own measure: the priced cost of expiry misses only (`previous_message_not_found`) at ≥10% of recent spend. Misses with another reason are shown but don't count toward the flag. Not Anthropic's verdict: `/usage` flags cache misses by its own measure |
 | **Fix shown** | Start fresh, or resume from a summary, rather than reopening a 500k-token session next morning. Avoid `/model` switches mid-session (`model_changed`) |
 
 The cache lifetime depends on version and plan: here the main thread used 1 hour and
@@ -144,7 +152,7 @@ hard-code it.
 |---|---|
 | **What** | Estimated cost per active day, with the published average ($13) and 90th percentile ($30) drawn on the chart |
 | **Fields** | Already computed |
-| **Why** | The only sourced spend benchmark. It marks outliers worth a conversation, not quality. On seat plans, limit hits (already tracked) matter more than dollars |
+| **Why** | The only sourced spend benchmark. It marks outliers worth a conversation, not quality. Anthropic's $13 is an average across its deployments, not a target, so at or under it is shown as "At or under the $13 average", never "healthy". On seat plans, limit hits (already tracked) matter more than dollars |
 
 ### 3.4 Friction that isn't the user's fault
 
@@ -153,7 +161,7 @@ hard-code it.
 | **What** | Tool error rate by tool and MCP server; runs of ≥3 consecutive errors; refused tool calls by reason |
 | **Fields** | Tool errors (already read). New: `toolDenialKind` (user-rejected, automode-blocked, automode-unavailable, permission-rule, interrupted), `permissionDecision.source`, per-thread order of tool results |
 | **Example** | Overall **2%** error rate, but one MCP server fails **30%** of the time; a handful of error streaks of 3 or more |
-| **Fix shown** | A broken integration, a missing permission rule, or a sandbox gap: often a team-level fix, which makes this the most useful single measure for managers |
+| **Fix shown** | Our suggestion, not Anthropic's: a tool that fails often may be a broken integration, a missing permission rule, or a sandbox gap, often a team-level fix, which makes this the most useful single measure for managers. The worst tool is the one behind the most errors; a name that never once succeeded (a tool the model invented, such as a lowercase `bash`) is ignored |
 
 ### 3.5 Workflow adoption
 
@@ -162,7 +170,7 @@ hard-code it.
 | **What** | Share of sessions that use subagents, plan mode, a project CLAUDE.md, skills, and hooks (e.g. a Stop hook as an automatic check) |
 | **Fields** | Subagents and skills (already read). New: per-prompt `permissionMode`, the `instructions` attachment's `files[].type` (Project / User / AutoMem; never path or content), hook summaries |
 | **Example** | Subagents run most requests but appear in only a quarter of sessions. Plan mode in a few percent of sessions. A project CLAUDE.md loaded in under half of sessions |
-| **Flag** | None; this is a profile. Plan mode is shown against sessions that edit many files, since the docs recommend it for multi-file work, not for one-line fixes |
+| **Flag** | None; this is a profile. Anthropic's costs page says only "Use plan mode for complex tasks", so plan mode is counted, not judged. Only sessions that made at least one request count: a transcript with none is not a session, in this denominator as everywhere else in the tool |
 
 ### 3.6 Recent sessions, scored for habits
 
@@ -277,8 +285,11 @@ Not read yet, because no first-build measure uses them: `isSidechain`,
   to Anthropic's docs. The baseline is the same measure over that earlier run of days: share
   of main spend, share of spend, spend per day, share of edited sessions
   checked, tool error rate, and share of sessions using subagents.
-  - A status ("Healthy" / "Worth a look") appears only on the three cards with a
-    sourced line: Anthropic's 10% rule and its $13/$30 benchmark.
+  - A badge appears only on the three cards with a sourced line: Anthropic's
+    10% rule, applied by this tool to its own measures (badges "Under 10%" /
+    "10% or more", not "Healthy" / "Worth a look"), and its $13/$30 benchmark
+    ("At or under the $13 average" / "Above the $30 p90"). A baseline with no
+    data reads "no data before this range".
   - Sparklines were left out: the baseline figure carries the comparison.
 - **Habits tab:** follows the dashboard's date range. It shows:
   - interaction tiles (prompts, requests per prompt, interrupts, compactions,
@@ -345,6 +356,27 @@ each now covered by `tests/test_health_review.py` or `tests/test_health_ui.py`:
   figure on its own, counts for the whole team only), then replaced on
   2026-10-11 by a per-person view; see §6 and [Team](team.md).
 
+**Overview review fixes. Done.** A second review, on real logs, of the Habits
+strip and the "Usage limits & friction" panel; covered by
+`tests/test_habits_limits_review.py`:
+- **Friction** names the tool behind the most errors, not the highest rate, and
+  ignores a tool name that never succeeded (a lowercase `bash` the model invented
+  had 17 calls, all failing, against 79% of all errors on the real `Bash`).
+- **Workflow and every habit denominator** count only transcripts with at least
+  one request, as the session count does.
+- **Compactions** show automatic and manual separately, from the events that
+  carry the trigger.
+- **Median turn** shows seconds under a minute and its sample, hides itself
+  under 10 turns, and says when the records stop before the end of the range
+  (Claude Code stopped writing `turn_duration` records).
+- **Allowance** is rounded, given with its basis (hits it rests on) and widened
+  to a range when a completed week without a limit notice used more; see
+  [Limitations](limitations.md).
+- **Badges** say they are this tool applying Anthropic's 10% line to its own
+  measure; spend at or under $13 is no longer called healthy; an empty earlier
+  window reads "no data before this range".
+- **Sources** corrected as in §1, §3 and Sources.
+
 **Phase 4, only if approved:** the remaining §4 signals (correction clusters,
 blind retries, edit churn), one at a time, each documented in docs/privacy.md and
 covered by the sentinel privacy test.
@@ -380,9 +412,10 @@ Anthropic (Claude Code docs, current as of Oct 2026):
   ≥10%; "Why usage climbs in a long session"; CLAUDE.md under 200 lines; Sonnet for
   most coding, Haiku for simple subagents.
 - [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices):
-  context as the key constraint; verification; plan mode for multi-file or
-  uncertain work; "more than twice" corrections → `/clear`; the five failure
-  patterns.
+  verification; "more than twice" corrections → `/clear`; the failure patterns;
+  subagents for parallel work, noisy output and independent review. It now lists
+  "The context window is your main constraint" under "What you can stop doing".
+  Plan mode: the costs page says only "Use plan mode for complex tasks".
 - [Monitoring (OpenTelemetry)](https://code.claude.com/docs/en/monitoring-usage)
   and [Analytics](https://code.claude.com/docs/en/analytics): the metrics Anthropic
   itself exposes (sessions, lines, commits, PRs, cost, tokens, edit decisions,
@@ -395,7 +428,8 @@ Anthropic research:
 - [Measuring AI agent autonomy in practice](https://www.anthropic.com/research/measuring-agent-autonomy),
   18 Feb 2026: interrupt and auto-approve rates by experience.
 - [Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents),
-  29 Sep 2025.
+  29 Sep 2025: recall decreases as tokens grow, "a performance gradient rather
+  than a hard cliff". The source for "a long context gets less reliable".
 
 Context degradation:
 - Chroma, [Context Rot](https://www.trychroma.com/research/context-rot),
@@ -403,7 +437,8 @@ Context degradation:
 
 Productivity measurement:
 - METR, [early-2025 AI and experienced OSS developers](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/),
-  10 Jul 2025, and its [Feb 2026 update](https://metr.org/blog/2026-02-24-uplift-update/).
+  10 Jul 2025, and its [Feb 2026 update](https://metr.org/blog/2026-02-24-uplift-update/),
+  which calls the 19% result outdated.
 - Ziegler et al., "Productivity assessment of neural code completion", 2022.
 - [DORA metrics guide](https://dora.dev/guides/dora-metrics-four-keys/).
 - Forsgren et al., "The SPACE of developer productivity", 2021. The full text

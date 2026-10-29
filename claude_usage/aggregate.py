@@ -207,6 +207,48 @@ def _counter_start(v) -> Optional[str]:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "{:03d}Z".format(dt.microsecond // 1000)
 
 
+def _logged_in_window(requests: list, state: dict, unknown_models: set) -> dict:
+    """Per normalized model, {"cost", "tokens"} of the requests a CLI counter
+    could have seen: those at or after its startTime and, when the snapshot's
+    time is known, at or before it. Priced at this tool's rates, request by
+    request, as everywhere else. A request with no time is kept: nothing says it
+    falls outside."""
+    since = _counter_start(state.get("startTime"))
+    until = state.get("ts")
+    out = defaultdict(lambda: {"cost": 0.0, "tokens": 0, "cw_5m": 0, "cw_1h": 0})
+    for rec in requests:
+        ts = rec["ts"]
+        if ts and ((since and ts < since) or (until and ts > until)):
+            continue
+        acc = out[normalize_model(rec["model"])]
+        acc["cost"] += _request_cost(rec, unknown_models)
+        acc["tokens"] += _request_tokens(rec)
+        cw_5m, cw_1h = _effective_cache_writes(rec)
+        acc["cw_5m"] += cw_5m
+        acc["cw_1h"] += cw_1h
+    return out
+
+
+def _counter_repriced(model: str, cli: dict, state: dict, unknown_models: set,
+                      split=(0, 0)) -> float:
+    """What a counter's own tokens for one model cost at this tool's rates on
+    the day of its last snapshot. The counter keeps no 5m/1h split of cache
+    writes, so they take the transcripts' own split for the model in the same
+    window, `split` = (5m, 1h) tokens (all 5m when they have none, as
+    _unlogged does). Pricing them all as 5m would read low wherever Claude Code
+    wrote 1-hour cache, which costs more, and look like a rate difference.
+    Summed tokens, so no prompt-length tier."""
+    t_5m, t_1h = split
+    writes = cli["cache_write_tokens"]
+    cw_1h = round(writes * t_1h / (t_5m + t_1h)) if t_5m + t_1h else 0
+    return cost_for(model, {
+        "input_tokens": cli["input_tokens"], "output_tokens": cli["output_tokens"],
+        "cache_read_input_tokens": cli["cache_read_tokens"],
+        "cache_creation": {"ephemeral_5m_input_tokens": writes - cw_1h,
+                           "ephemeral_1h_input_tokens": cw_1h},
+    }, unknown_models, ts=state.get("ts"), summed=True)
+
+
 def _unlogged(cli_by_model: dict, requests: list, state: dict, unknown_models: set):
     """(cost, per-model rows) of what a CLI counter recorded and the transcripts
     did not: per model and token category, the counter's tokens less the
@@ -447,8 +489,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     session_models = defaultdict(set)
     session_imputed = defaultdict(int)       # imputed output tokens per session
     session_placeholders = defaultdict(int)  # responses whose output was imputed
-    # Per (session, model) estimate, for reconciliation against cost-state modelUsage.
-    session_model_est = defaultdict(lambda: {"cost": 0.0, "tokens": 0})
     # Cost of requests won by a subagent file, keyed by that file's path. Keying
     # on agent_id would double-count the rare agent whose transcript is copied
     # under two parent session directories.
@@ -487,10 +527,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             agent_tokens[owner_path] += tokens
             agent_requests[owner_path] += 1
 
-        est = session_model_est[(sid, model)]
-        est["cost"] += cost
-        est["tokens"] += tokens
-
         agent_type = -1
         if kind == "sub":
             agent_type = request_agent_type.get(_response_key(rec), "unknown")
@@ -506,6 +542,8 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         b["cache_write_5m"] += cw_5m
         b["cache_write_1h"] += cw_1h
         b["thinking_tokens"] += _tok(rec["thinking_tokens"])
+        if not rec.get("thinking_logged", True):
+            b["thinking_unlogged"] += 1
         b["web_search_requests"] += _tok(rec["web_search_requests"])
         b["web_fetch_requests"] += _tok(rec.get("web_fetch_requests"))
         b["cost"] += cost
@@ -523,6 +561,9 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
             round(b["cache_saved"], 6),
             # Of the output in column 6, how much was imputed (imputed_output).
             round(b["imputed_output"]),
+            # Responses that logged no thinking count (column 10 holds zero for
+            # them, though they may have thought).
+            int(b["thinking_unlogged"]),
         ])
 
     # Hourly buckets: a habits panel reads days and weeks, and the finer
@@ -691,7 +732,7 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
     # ---- Sessions table ----
     sessions_rows = []
     reconcile = defaultdict(lambda: {"est_cost": 0.0, "est_tokens": 0, "cli_cost": 0.0,
-                                     "cli_tokens": 0, "sessions": 0})
+                                     "cli_tokens": 0, "cli_repriced": 0.0, "sessions": 0})
     for sid, info in main_sessions.items():
         facts = info["facts"]
         group = counter_of.get(sid)
@@ -738,29 +779,40 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
                 acc[k] += _tok(cli[k])
             acc["cost"] += _num(cli["cost"])
 
-        est_by_model = defaultdict(lambda: {"cost": 0.0, "tokens": 0})
-        for (est_sid, est_model), est in session_model_est.items():
-            if est_sid not in members:
-                continue
-            acc = est_by_model[normalize_model(est_model)]
-            acc["cost"] += est["cost"]
-            acc["tokens"] += est["tokens"]
+        # The transcript side is the requests the counter could have seen: every
+        # response the counter's files hold, whoever won it in the dedupe (a
+        # continuation that copied the session wins its requests, but the
+        # counter saw them in the original), from the counter's start to its
+        # last snapshot. Counting everything the session won, over its whole
+        # life, set a counter's window against a longer one.
+        held = set()
+        est_by_model = {}
+        if best_state and cli_by_model:
+            held = set().union(*(session_held.get(m, ()) for m in members))
+            est_by_model = _logged_in_window(
+                [winner_by_key[k] for k in held], best_state, unknown_models)
 
         model_rows = []
         for model, cli in cli_by_model.items():
             est = est_by_model.get(model, {"cost": 0.0, "tokens": 0})
             cli_tokens = (cli["input_tokens"] + cli["output_tokens"]
                           + cli["cache_read_tokens"] + cli["cache_write_tokens"])
+            # The counter's own tokens at this tool's rates: against its costUSD
+            # that tests the rate table; against `est`, nothing about rates.
+            repriced = _counter_repriced(model, cli, best_state, unknown_models,
+                                         (est.get("cw_5m", 0), est.get("cw_1h", 0)))
             model_rows.append({
                 "model": model,
                 "est_cost": round(est["cost"], 6), "est_tokens": est["tokens"],
                 "cli_cost": round(cli["cost"], 6), "cli_tokens": cli_tokens,
+                "cli_repriced": round(repriced, 6),
             })
             agg = reconcile[model]
             agg["est_cost"] += est["cost"]
             agg["est_tokens"] += est["tokens"]
             agg["cli_cost"] += cli["cost"]
             agg["cli_tokens"] += cli_tokens
+            agg["cli_repriced"] += repriced
             agg["sessions"] += len(members)
         model_rows.sort(key=lambda r: -r["cli_cost"])
 
@@ -768,7 +820,6 @@ def build_payload(main_sessions: dict, sub_agents: list, now_iso: str, tz=None) 
         # a counter: nothing measured it.
         unlogged_cost, unlogged_models = None, []
         if best_state and cli_by_model:
-            held = set().union(*(session_held.get(m, ()) for m in members))
             unlogged_cost, unlogged_models = _unlogged(
                 cli_by_model, [winner_by_key[k] for k in held], best_state, unknown_models)
             unlogged_cost = round(unlogged_cost, 6)

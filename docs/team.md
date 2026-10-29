@@ -270,10 +270,13 @@ People table.
   reads "—" with a "re-export to measure" hint, and no context finding fires for
   them. A person with some weeks measured and some not is
   judged on the measured weeks only, in the table and in the finding alike.
-- **Friction by integration**: tool error rates across the selected people,
-  MCP tools grouped by server, for anything called at least 20 times, with a
-  People column naming who hit the errors. A tool that fails for everyone is an
-  integration or permission to fix, not anyone's habit. Claude Code's own tools
+- **Friction by integration**: tool errors across the selected people, most
+  errors first (with the rate), MCP tools grouped by server, for anything called
+  at least 20 times, with a People column naming who hit the errors. A built-in
+  tool name that never once succeeded is one the model made up and is left out;
+  an MCP tool that never succeeded is a broken integration and stays. Our
+  suggestion, not Anthropic's: a tool that fails for everyone may be an
+  integration or permission worth checking. Claude Code's own tools
   (task, schedule, plan-mode and worktree tools and the like) sit in a collapsed
   table below, since their errors aren't an integration to fix. An MCP server
   whose name is a UUID shows as "MCP connector (id…)".

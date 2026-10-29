@@ -7,9 +7,12 @@
 //
 // Rules the panel keeps:
 //  - no composite score: each habit is priced or counted on its own;
-//  - a status (healthy / worth a look) only where a sourced line exists --
-//    Anthropic's 10%-of-spend rule for long context and cache misses, and its
-//    $13 / $30 per-active-day spend benchmark. Everything else is a profile;
+//  - a status only where a sourced line exists -- Anthropic's /usage 10% line,
+//    which this tool applies to its own measures of long context and cache
+//    expiry (so it is the tool's reading, not Anthropic's verdict), and
+//    Anthropic's $13 average / $30 90th-percentile spend per active day, shown
+//    as where you sit against them, never as a target. Everything else is a
+//    profile;
 //  - a measure the user's Claude Code version doesn't record says so, rather
 //    than showing zero.
 
@@ -34,6 +37,14 @@ const MODE_LABELS = {
   unknown: 'Not recorded',
 };
 const EXPIRED_MISS = 'previous_message_not_found';
+
+// A built-in tool name that never once succeeded is one the model made up (a
+// lowercase `bash`): no such tool exists, so nothing can be fixed. An MCP tool
+// that never succeeded is different: a broken integration, worth showing.
+// Used wherever tools are ranked by their errors (here and app.js).
+function inventedTool(name, t) {
+  return !String(name).startsWith('mcp__') && t.calls > 0 && t.errors >= t.calls;
+}
 
 function habitsAvailable() { return !!(PAYLOAD && PAYLOAD.health); }
 
@@ -67,10 +78,14 @@ function healthRows(name, w) {
   return rows.filter(r => inWindow(r[0], w) && projectOk(projectOf(r[1])) &&
     (byModel ? modelOk(r[2]) : modelsOk(modelsOfSession(r[1]))));
 }
+// A transcript that made no requests (opened and closed, or a stub) is not a
+// session: the rest of the tool leaves it out of the session count. A payload
+// row without the field is taken as a session.
+function didWork(s) { return s.requests == null || s.requests > 0; }
 // Sessions that ended inside the window, originals only (a fork copy is a
 // prefix of a session already listed).
 function habitSessions(w) {
-  return PAYLOAD.sessions.filter(s => !s.derived && s.health &&
+  return PAYLOAD.sessions.filter(s => !s.derived && s.health && didWork(s) &&
     inWindow(sessionEndDay(s) || sessionStartDay(s), w) && projectOk(s.project) && modelsOk(s.models));
 }
 
@@ -134,10 +149,16 @@ function habitMeasures(w) {
     const t = byTool[r[2]] = byTool[r[2]] || { calls: 0, errors: 0 };
     t.calls += r[3]; t.errors += r[4];
   });
+  // The tool behind the most errors. A built-in name that never once
+  // succeeded is one the model made up (a lowercase `bash`), not a tool to
+  // fix, so it is not a candidate; an MCP tool that never succeeded is a
+  // broken integration, and is. The rank is by errors, not by rate, so a
+  // rarely-called tool can't outrank the one that accounts for the failures.
   const worstTool = Object.entries(byTool)
-    .filter(([, t]) => t.calls >= 10 && t.errors > 0)
-    .map(([name, t]) => ({ name, rate: t.errors / t.calls, calls: t.calls }))
-    .sort((a, b) => b.rate - a.rate)[0] || null;
+    .filter(([name, t]) => t.calls >= 10 && t.errors > 0 && !inventedTool(name, t))
+    .map(([name, t]) => ({ name, errors: t.errors, rate: t.errors / t.calls, calls: t.calls,
+                           shareOfErrors: toolErrors ? t.errors / toolErrors : null }))
+    .sort((a, b) => b.errors - a.errors || a.name.localeCompare(b.name))[0] || null;
 
   const sessions = habitSessions(w);
   const edited = sessions.filter(s => s.health.edits > 0);
@@ -169,22 +190,36 @@ function ratio(a, b) { return b > 0 ? a / b : null; }
 // ---------- statuses ------------------------------------------------------- //
 
 // Anthropic: /usage flags long context or cache misses once either is 10% or
-// more of recent usage.
+// more of recent usage. This tool applies that line to its own measures (a
+// 500k-token cutoff; the cost of re-caching after the cache expired), so the
+// result is the tool's reading, not Anthropic's verdict.
 function shareStatus(share) {
   if (share == null) return null;
   return share >= PAYLOAD.health.thresholds.flag_share ? 'look' : 'ok';
 }
 // Anthropic: about $13 per developer per active day on average, under $30 for
-// 90% of users. Above the 90th percentile is worth a look; it is not a verdict.
+// 90% of users. Above the 90th percentile is flagged; at or under the average
+// is not a target met, only where the figure sits.
 function spendStatus(perDay) {
   if (perDay == null) return null;
   const b = PAYLOAD.health.benchmarks.cost_per_active_day;
   return perDay > b.p90 ? 'look' : (perDay <= b.average ? 'ok' : 'typical');
 }
-function statusBadge(status) {
-  if (status === 'look') return '<span class="badge warn habit-status">! Worth a look</span>';
-  if (status === 'ok') return '<span class="badge ok habit-status">&#10003; Healthy</span>';
-  if (status === 'typical') return '<span class="badge habit-status">Typical range</span>';
+const SHARE_BADGE_TIP = "This tool applies Anthropic's /usage 10% line to its own measure of the habit. " +
+  "It is the tool's reading, not Anthropic's verdict.";
+// `kind` is 'share' (the 10% line) or 'spend' (Anthropic's $13 average / $30 p90).
+function statusBadge(status, kind) {
+  const spend = kind === 'spend';
+  const tip = spend ? "Anthropic's published figures for spend per active day: about $13 on average, under $30 for 90% of users. They describe a population; they are not a target."
+                    : SHARE_BADGE_TIP;
+  if (status === 'look') {
+    return `<span class="badge warn habit-status" title="${esc(tip)}">${spend ? '! Above the $30 p90' : '! 10% or more'}</span>`;
+  }
+  if (status === 'ok') {
+    return spend ? `<span class="badge habit-status" title="${esc(tip)}">At or under the $13 average</span>`
+                 : `<span class="badge ok habit-status" title="${esc(tip)}">&#10003; Under 10%</span>`;
+  }
+  if (status === 'typical') return `<span class="badge habit-status" title="${esc(tip)}">Between the $13 and $30 lines</span>`;
   return '';
 }
 
@@ -194,7 +229,7 @@ function habitCards(r, b) {
   const h = PAYLOAD.health;
   const src = h.sources;
   const bench = h.benchmarks.cost_per_active_day;
-  const pctVs = (now, base) => base == null ? 'no baseline yet' : `baseline ${fmtPct(base)}`;
+  const pctVs = (now, base) => base == null ? 'no data before this range' : `baseline ${fmtPct(base)}`;
   const n = r.sessions.length;
   const longK = Math.round(h.thresholds.long_context_tokens / 1000);
   const flagK = Math.round((h.thresholds.flag_context_tokens || h.thresholds.long_context_tokens) / 1000);
@@ -202,20 +237,26 @@ function habitCards(r, b) {
 
   cards.push({
     label: 'Context tax',
+    kind: 'share',
     status: shareStatus(r.veryLongShare),
     value: r.mainCost > 0 ? `${fmtPct(r.veryLongShare)} <span class="unit">of main spend</span>` : '—',
     sub: `${fmtCost(r.veryLongCost)} of ${fmtCost(r.mainCost)} on requests over ${flagK}k tokens ` +
          `(${fmtPct(r.longShare)} over ${longK}k) · ${pctVs(r.veryLongShare, b.veryLongShare)}` +
          (r.ev.auto ? ` · ${fmtInt(r.ev.auto)} auto-compaction${r.ev.auto === 1 ? '' : 's'}` : ''),
     fix: '<code>/clear</code> between unrelated tasks; for big work, write a spec and start a fresh session.',
-    link: src.best_practices,
+    link: src.context_engineering || src.best_practices,
     tip: `Share of main-conversation spend on requests carrying more than ${flagK}k tokens of context ` +
          `(subagents excluded: each starts with a fresh, smaller context). Anthropic's /usage ` +
-         `flags long context once it is 10% or more of recent usage. The flag is at ${flagK}k; the ` +
-         `${longK}k share is shown for context. Both lines are this tool's choice, not Anthropic's.`,
+         `flags long context once it is 10% or more of recent usage; the badge is this tool applying ` +
+         `that 10% line to its own ${flagK}k measure, not Anthropic's verdict. The ${flagK}k flag and the ` +
+         `${longK}k share are this tool's own lines: Anthropic's pricing has no tier there (Claude 4.6 and ` +
+         `later include the 1M window at standard pricing). Why it matters: Anthropic's context-engineering ` +
+         `post says recall decreases as tokens grow, a performance gradient rather than a hard cliff. ` +
+         `/clear between unrelated tasks is still worth doing.`,
   });
   cards.push({
     label: 'Cold-cache tax',
+    kind: 'share',
     status: shareStatus(r.coldShare),
     value: r.spend > 0 ? `${fmtPct(r.coldShare)} <span class="unit">of spend</span>` : '—',
     sub: `${fmtCost(r.coldCost)} re-caching after the cache expired · ${pctVs(r.coldShare, b.coldShare)}`,
@@ -223,19 +264,22 @@ function habitCards(r, b) {
     link: src.costs,
     tip: "Extra paid to rebuild the prompt cache when a session was picked up after its cache expired, " +
          "by Claude Code's own cache-miss label, over reading the same tokens from a warm cache. " +
-         "Anthropic's /usage flags cache misses at 10% or more of recent usage; this card flags only " +
-         "the expiry misses (previous_message_not_found), not misses with another reason.",
+         "Anthropic's /usage flags cache misses at 10% or more of recent usage; the badge is this tool " +
+         "applying that 10% line to its own measure, the priced cost of expiry misses " +
+         "(previous_message_not_found) only, not misses with another reason. It is not Anthropic's verdict.",
   });
   cards.push({
     label: 'Spend per active day',
+    kind: 'spend',
     status: spendStatus(r.costPerDay),
     value: r.costPerDay == null ? '—' : fmtCost(r.costPerDay),
     sub: `Anthropic: ~${fmtCost0(bench.average)} average, under ${fmtCost0(bench.p90)} for 90% · ` +
-         (b.costPerDay == null ? 'no baseline yet' : `baseline ${fmtCost(b.costPerDay)}`),
+         (b.costPerDay == null ? 'no data before this range' : `baseline ${fmtCost(b.costPerDay)}`),
     fix: 'High spend usually traces to long uncleared sessions or the top model left on for everything.',
     link: src.costs,
     tip: 'List-price equivalent per day with any usage. On a seat plan this is not your bill; it shows ' +
-         'how hard you draw on the allowance.',
+         "how hard you draw on the allowance. Anthropic's $13 and $30 are averages across its own " +
+         'deployments, not targets: under $13 does not mean healthy, and over $30 only puts you in the top tenth.',
   });
   cards.push({
     label: 'Checking work',
@@ -253,12 +297,14 @@ function habitCards(r, b) {
     status: null,
     value: r.toolCalls ? `${fmtPct(ratio(r.toolErrors, r.toolCalls))} <span class="unit">tool errors</span>` : '—',
     sub: (r.streaks ? `${fmtInt(r.streaks)} run${r.streaks === 1 ? '' : 's'} of ${PAYLOAD.health.thresholds.error_streak}+ errors in a row` : 'no long error runs') +
-         (r.worstTool && r.worstTool.rate >= 0.1 ? ` · ${esc(r.worstTool.name)} fails ${fmtPct(r.worstTool.rate)}` : '') +
+         (r.worstTool ? ` · most errors: ${esc(r.worstTool.name)}, ${fmtPct(r.worstTool.shareOfErrors)} of the errors ` +
+                        `(fails ${fmtPct(r.worstTool.rate)} of its calls)` : '') +
          ` · ${pctVs(null, ratio(b.toolErrors, b.toolCalls))}`,
-    fix: 'A tool that keeps failing is usually an integration or permission to fix, not a habit.',
+    fix: "Our suggestion, not Anthropic's: a tool that fails often may be an integration or permission worth checking.",
     link: null,
-    tip: 'Tool calls that returned an error, runs of consecutive failures, and the worst tool with at ' +
-         'least 10 calls.',
+    tip: 'Tool calls that returned an error, runs of consecutive failures, and the tool behind the most ' +
+         'errors (at least 10 calls; a built-in tool name that never succeeded is one the model ' +
+         'invented and is left out, while an MCP tool that never succeeded is a broken integration and counts).',
   });
   cards.push({
     label: 'Workflow',
@@ -267,10 +313,12 @@ function habitCards(r, b) {
     sub: (n ? `plan mode ${fmtInt(r.withPlan)} · project CLAUDE.md ` +
               (r.instrRecorded ? `${fmtInt(r.withProjectMd)} of ${fmtInt(r.instrRecorded)}` : 'not recorded') : 'no sessions') +
          ` · subagents ${pctVs(null, ratio(b.withSubagents, b.sessions.length))}`,
-    fix: 'Plan mode for multi-file or unfamiliar work; subagents for research; a short CLAUDE.md.',
-    link: src.best_practices,
-    tip: 'Sessions that ended in the window. Whether a CLAUDE.md was loaded is only recorded by newer ' +
-         'Claude Code versions.',
+    fix: 'Plan mode for complex tasks; subagents for parallel work, noisy output or an independent review; a short CLAUDE.md.',
+    link: src.costs,
+    tip: 'Sessions that ended in the window and made at least one request. Anthropic\'s costs page: ' +
+         '"Use plan mode for complex tasks". Its best-practices page suggests subagents for parallel ' +
+         'work, noisy output and independent review. Whether a CLAUDE.md was loaded is only recorded by ' +
+         'newer Claude Code versions.',
   });
   return cards;
 }
@@ -291,7 +339,7 @@ function renderHabitStrip() {
   document.getElementById('habitsWindow').textContent =
     `${prettyDate(recent.from)} \u2013 ${prettyDate(recent.to)}, against the ` +
     `${nDays === 1 ? '1 day' : nDays + ' days'} before` +
-    (r.spend ? (flagged ? ` · ${flagged} habit${flagged === 1 ? '' : 's'} worth a look` : ' · nothing flagged') : '');
+    (r.spend ? (flagged ? ` · ${flagged} flagged` : ' · nothing flagged') : '');
   const strip = document.getElementById('habitsStrip');
   if (!r.spend && !r.sessions.length) {
     strip.innerHTML = `<div class="empty-state"><div class="es-title">No activity in these dates</div>` +
@@ -300,7 +348,7 @@ function renderHabitStrip() {
   }
   strip.innerHTML = cards.map(c =>
     `<div class="habit${c.status === 'look' ? ' flagged' : ''}" title="${esc(c.tip)}">` +
-      `<div class="habit-top"><span class="label">${esc(c.label)}</span>${statusBadge(c.status)}</div>` +
+      `<div class="habit-top"><span class="label">${esc(c.label)}</span>${statusBadge(c.status, c.kind)}</div>` +
       `<div class="value">${c.value}</div>` +
       `<div class="sub">${c.sub}</div>` +
       `<div class="fix">${c.fix}${c.link ? ` <a href="${safeUrl(c.link)}" target="_blank" rel="noopener">Why</a>` : ''}</div>` +
@@ -479,7 +527,7 @@ function renderCheckTiles(m) {
 
 function renderRecentSessions() {
   const el = document.getElementById('habitRecent');
-  const rows = sessionRows().filter(s => !s.derived && s.health)
+  const rows = sessionRows().filter(s => !s.derived && s.health && didWork(s))
     .sort((a, b) => String(b.end || b.start).localeCompare(String(a.end || a.start)))
     .slice(0, 6);
   if (!rows.length) {

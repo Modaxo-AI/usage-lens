@@ -673,7 +673,11 @@ def summary_rows(payload, person, since=None, until=None, ctx=None):
         if not _in_range(day, since, until):
             continue
         b = bucket(day, s["project"])
-        b["sessions"] += 1
+        # A transcript that never got a reply is listed on the sessions sheet
+        # but isn't a session (the dashboard's rule), so it isn't counted
+        # (schema 12). A payload without the field counts, as before.
+        if s.get("requests", 1):
+            b["sessions"] += 1
         b["active_ms"] += s.get("active_ms") or 0
         session_cost = (s.get("est_cost_main") or 0.0) + (s.get("est_cost_sub") or 0.0)
         if s.get("prs"):

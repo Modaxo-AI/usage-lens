@@ -342,7 +342,7 @@ class TestAllowance(unittest.TestCase):
 
     def test_steps_to_the_window_containing_now(self):
         snap = limits.allowance_snapshot([self.EPISODE], [("2026-03-14T09:00:00Z", 30.0)],
-                                         now=_utc("2026-03-15T09:00:00Z"))
+                                         now=_utc("2026-03-15T09:00:00Z"), tz=dt.timezone.utc)
         self.assertEqual(snap["week_start"], "2026-03-13T09:00:00Z")
         self.assertEqual(snap["week_end"], "2026-03-20T09:00:00Z")
         self.assertEqual(snap["used_usd"], 30.0)
@@ -351,7 +351,7 @@ class TestAllowance(unittest.TestCase):
     def test_on_pace_to_hit_gives_a_projection(self):
         # $60 in the first two days of a seven-day window: $100 by day 3.3.
         snap = limits.allowance_snapshot([self.EPISODE], [("2026-03-14T09:00:00Z", 60.0)],
-                                         now=_utc("2026-03-15T09:00:00Z"))
+                                         now=_utc("2026-03-15T09:00:00Z"), tz=dt.timezone.utc)
         self.assertEqual(snap["status"], "on_pace_to_hit")
         self.assertEqual(snap["projected_hit_at"], "2026-03-16T17:00:00Z")
 

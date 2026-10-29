@@ -194,9 +194,10 @@ class TestCacheSaving(unittest.TestCase):
 
     def test_every_usage_row_carries_a_saving(self):
         for r in self.payload["usage"]:
-            self.assertEqual(len(r), 17, r)
+            self.assertEqual(len(r), 18, r)
             self.assertIsInstance(r[15], (int, float))
             self.assertIsInstance(r[16], int, "imputed output tokens")
+            self.assertIsInstance(r[17], int, "responses without a thinking count")
 
     def test_saving_is_zero_without_cache_reads(self):
         # A row with no cache reads and no cache writes cannot have saved

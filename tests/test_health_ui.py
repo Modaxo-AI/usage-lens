@@ -321,7 +321,9 @@ class TestHabitsStripBaselines(unittest.TestCase):
         cards = re.split(r'<div class="habit(?: flagged)?" ', html)[1:]
         self.assertEqual(len(cards), 6)
         for card in cards:
-            self.assertIn("baseline", card.split('<div class="sub">')[1].split("</div>")[0], card)
+            sub = card.split('<div class="sub">')[1].split("</div>")[0]
+            # A baseline with no data says so ("no data before this range").
+            self.assertTrue("baseline" in sub or "no data before this range" in sub, card)
 
 
 class TestPersonalRangeEverywhere(unittest.TestCase):

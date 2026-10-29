@@ -57,17 +57,17 @@ export zips/CSVs (one or more per person, from collect.py --export / Export (.zi
 1. **One response, several lines.** Claude Code writes one transcript line per
    content block of a response (thinking, text, each tool call), and every line
    repeats the whole response's usage — about two lines per response on a real
-   log set. In subagent transcripts from Claude Code 2.1.284 on, *every* line
-   keeps a placeholder output count and the final one is never written; that
-   output is imputed (see [Cost estimates](cost.md#subagent-output-and-calls-the-transcripts-miss)).
+   log set. In subagent transcripts from Claude Code 2.1.284 until 2.1.307
+   fixed it, *every* line kept a placeholder output count and the final one
+   was never written; that output is imputed (see [Cost estimates](cost.md#subagent-output-and-calls-the-transcripts-miss)).
    The parser counts each response once by its `message.id` — Anthropic's own
    rule ("deduplicate by ID to avoid double-counting", Agent SDK cost-tracking
    guide) — falling back to `requestId` only when there is no message id, and
    keeps the record with the largest `output_tokens`. Keying on the message id
    rather than `requestId` matters because a sidechain replay can rewrite an
-   existing response under a new request id. Claude Code's own `/stats` sums
-   every line, which is why its token total is about twice this tool's (see
-   anthropics/claude-code#91775).
+   existing response under a new request id. Claude Code's own `/stats` has been
+   reported to sum every line, which would make its token total about twice
+   this tool's (anthropics/claude-code#91775).
 2. **Subagent transcripts.** Background/forked agents write to
    `<project>/<session>/subagents/agent-*.jsonl`, a separate tree from the main
    session file, and newer Claude Code puts Workflow-agent transcripts one level

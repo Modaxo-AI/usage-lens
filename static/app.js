@@ -22,6 +22,7 @@ function fmtInt(n) {
 function fmtTokens(n) {
   n = asNum(n);
   if (!Number.isFinite(n)) return '—';
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
   if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
   if (Math.round(n) < 1e3) return fmtInt(n);
   const k = Math.round(n/100) / 10;
@@ -44,6 +45,8 @@ function median(sorted) {
 }
 function fmtDuration(ms) {
   if (!ms) return '—';
+  // Under a minute is seconds: rounding 40s to "1m" overstates it by half.
+  if (ms < 60000) return Math.max(1, Math.round(ms / 1000)) + 's';
   const m = ms / 60000;
   if (m >= 60) return (m/60).toFixed(1) + 'h';
   return Math.round(m) + 'm';
@@ -917,8 +920,12 @@ function renderGlobalStats() {
   const cacheWrite = rows.reduce((s,r) => s+r[8]+r[9], 0);
   const inputTok = rows.reduce((s,r) => s+r[5], 0);
   const cacheHit = (inputTok+cacheRead+cacheWrite) > 0 ? cacheRead/(inputTok+cacheRead+cacheWrite) : null;
-  const sessions = sessionRows().length;
+  // A transcript that never got a reply isn't a session (aggregate.py counts
+  // the header's sessions the same way), though the Sessions tab lists it.
+  const sessions = sessionRows().filter(s => (s.requests || 0) > 0).length;
   const thinking = rows.reduce((s,r) => s+r[10], 0);
+  // Responses that logged no thinking count: their thinking is unknown, not 0.
+  const thinkingUnlogged = rows.reduce((s,r) => s + (r[17] || 0), 0);
   // Counted from tool calls, not usage.server_tool_use. That field tracks the
   // Messages API's *server-side* web search tool, where Anthropic runs the
   // query. Claude Code's WebSearch/WebFetch are client-side tools -- it fetches
@@ -949,9 +956,15 @@ function renderGlobalStats() {
   const imputed = rows.reduce((s,r) => s + (r[16] || 0), 0);
   // What Claude Code's own counter recorded and no transcript did. Kept out of
   // Total cost (every chart adds up to that) and shown beside it. A session
-  // without a counter is left out, not counted as zero.
-  const counted = sessionRows().filter(s => s.est_cost_unlogged != null);
+  // without a counter is left out, not counted as zero. A counter covers its
+  // session's whole life and can't be split by day, so only sessions wholly
+  // inside the selected dates count (the reconciliation panel's rule): a
+  // month-long session's shortfall doesn't land on the last five days.
+  const withCounter = sessionRows().filter(s => s.est_cost_unlogged != null);
+  const counted = withCounter.filter(s => sessionStartDay(s) >= state.from
+                                          && (sessionEndDay(s) || sessionStartDay(s)) <= state.to);
   const unlogged = counted.reduce((s,x) => s + x.est_cost_unlogged, 0);
+  const straddling = withCounter.length - counted.length;
 
   const tiles = [
     // Transcripts don't record every model call Claude Code makes (see
@@ -960,26 +973,38 @@ function renderGlobalStats() {
     // priced and shown as the caption.
     ['Total cost', fmtCost(totalCost),
      counted.length
-       ? `+ ${fmtCost(unlogged)} not in transcripts (${fmtInt(counted.length)} session${counted.length === 1 ? '' : 's'} with a counter)`
+       ? `+ ${fmtCost(unlogged)} not in transcripts (${fmtInt(counted.length)} session${counted.length === 1 ? '' : 's'} with a counter` +
+         (straddling ? `; ${fmtInt(straddling)} more run past these dates)` : ')')
        : 'from transcripts · may read low',
      UNLOGGED_CALLS_NOTE],
+    // Cache reads are nearly all of it (the whole conversation is re-read each
+    // turn), so the caption gives the rest: closer to the work done.
     ['Total tokens', fmtTokens(totalTokens),
-     imputed > 0 ? `incl. ${fmtTokens(imputed)} imputed subagent output` : null,
+     [`${fmtTokens(totalTokens - cacheRead)} excl. cache reads`,
+      imputed > 0 ? `incl. ${fmtTokens(imputed)} imputed` : null].filter(Boolean).join(' · '),
      UNLOGGED_CALLS_NOTE],
     ['Sessions', fmtInt(sessions)],
     ['Requests', fmtInt(totalRequests)],
+    // The output share includes imputed output; the thinking share is logged
+    // thinking only (see THINKING_NOTE), so it says so.
     ['Subagent cost share', fmtPct(totalCost > 0 ? subCost/totalCost : null),
-     outShare == null ? null : `${fmtPct(outShare)} of output · ${fmtPct(thinkShare)} of thinking`],
+     outShare == null ? null : `${fmtPct(outShare)} of output · ${fmtPct(thinkShare)} of logged thinking`],
     ['Median session', medianCost == null ? '—' : fmtCost(medianCost),
      sessionCosts.length ? `mean ${fmtCost(totalCost/sessionCosts.length)}` : null],
-    ['Cost concentration', fmtPct(topShare),
+    // With five sessions or fewer the top five are all of them: 100% says
+    // nothing, so the tile waits for more.
+    ['Cost concentration', sessionCosts.length > 5 ? fmtPct(topShare) : '—',
      // "with spend" because a session that recorded no priced usage is not in
      // this denominator, and the Sessions tile beside it counts differently.
-     sessionCosts.length ? `top ${topN} of ${fmtInt(sessionCosts.length)} sessions with spend` : null],
-    ['Cache hit rate', fmtPct(cacheHit)],
+     sessionCosts.length > 5 ? `top ${topN} of ${fmtInt(sessionCosts.length)} sessions with spend`
+       : `needs more than 5 sessions with spend (${fmtInt(sessionCosts.length)} here)`],
+    ['Cache hit rate', fmtPct(cacheHit), 'share of prompt tokens read from cache', CACHE_HIT_NOTE],
     ['Cache saved', fmtCost(cacheSaved),
-     uncached > 0 ? `${Math.round(100*cacheSaved/uncached)}% below ${fmtCost0(uncached)} uncached` : null],
-    ['Thinking tokens', fmtTokens(thinking)],
+     uncached > 0 ? `${Math.round(100*cacheSaved/uncached)}% below ${fmtCost0(uncached)} uncached, at list price` : null,
+     CACHE_SAVED_NOTE],
+    ['Thinking tokens', fmtTokens(thinking),
+     thinkingUnlogged > 0 ? `at least · ${fmtInt(thinkingUnlogged)} responses didn't log it` : 'as logged',
+     THINKING_NOTE],
     ['Web lookups', fmtInt(webSearch + webFetch),
      `${fmtInt(webSearch)} search · ${fmtInt(webFetch)} fetch`],
   ];
@@ -1001,13 +1026,26 @@ function tileColumns(n) {
 }
 
 const UNLOGGED_CALLS_NOTE =
-  'Counted from the session transcripts. Since Claude Code 2.1.284 most subagent responses are ' +
-  'logged with a placeholder output count; their output is imputed from how much each response ' +
-  'wrote (within a few percent in aggregate) and included here. Claude Code also makes model calls ' +
-  'that are never written to the transcripts. Where a session kept Claude Code\'s own cost counter, ' +
-  'what it recorded beyond the transcripts is priced at list rates and shown as "not in transcripts"; ' +
-  'for a session without one (most desktop sessions) that part is unknown, so the total is a floor. ' +
-  'See docs/limitations.md.';
+  'Counted from the session transcripts. From Claude Code 2.1.284 until 2.1.307 fixed it, most ' +
+  'subagent responses were logged with a placeholder output count; their output is imputed from how ' +
+  'much each response wrote (within about 5% in aggregate for most models, about 8% low for Sonnet ' +
+  '5.5) and included here. Claude Code also makes model calls that are never written to the ' +
+  'transcripts. Where a session kept Claude Code\'s own cost counter, what it recorded beyond the ' +
+  'transcripts is priced at list rates and shown as "not in transcripts", for sessions that lie ' +
+  'wholly inside the selected dates (a counter can\'t be split by day); for a session without one ' +
+  '(most desktop sessions) that part is unknown, so the total is a floor. See docs/limitations.md.';
+const CACHE_HIT_NOTE =
+  'Share of prompt tokens read from the cache: cache reads / (input + cache reads + cache writes). ' +
+  'Claude Code re-sends the whole conversation each turn, so this sits near 97–98% for almost ' +
+  'everyone and barely moves. The Habits strip\'s cold-cache card shows the misses that cost money.';
+const CACHE_SAVED_NOTE =
+  'What the cache reads would have cost as plain input, less the extra paid to write the cache, at ' +
+  'API list prices. "Uncached" is that same stream of tokens priced with no cache: a list-price ' +
+  'comparison, not money saved on a seat plan, and not what a run without caching would have cost.';
+const THINKING_NOTE =
+  'Claude Code logs a thinking-token count on each response (inside the output count). Responses ' +
+  'that don\'t log one (placeholder subagent lines, older builds) count as zero here, so this is a ' +
+  'floor.';
 
 function renderTiles(mountId, tiles) {
   const el = document.getElementById(mountId);
@@ -1109,15 +1147,39 @@ function renderLimits() {
   const lockouts = eps.filter(e => e.locked_out);
   const lockedHours = lockouts.reduce((s, e) => s + e.blocked_hours, 0);
   const extra = eps.filter(e => e.kind === 'weekly').reduce((s, e) => s + (e.usage_after_hit_usd || 0), 0);
-  const medTurn = median([...turns].sort((a, b) => a - b));
+  // Automatic and manual compactions come from the health events (they carry
+  // the trigger); the friction rows count the same records without it.
+  let compactAuto = 0, compactManual = 0;
+  ((PAYLOAD.health && PAYLOAD.health.events) || []).forEach(([bucket, sid, kind, value, n]) => {
+    if (kind !== 'compact' || !inDateRange(bucket) || !sessionOk(sid)) return;
+    if (value === 'manual') compactManual += n; else compactAuto += n;
+  });
+  const compactSplit = [`${fmtInt(compactAuto)} automatic`, `${fmtInt(compactManual)} manual`];
+  if (compactions > compactAuto + compactManual) compactSplit.push(`${fmtInt(compactions - compactAuto - compactManual)} unclassified`);
+  const compactSub = compactions && !(PAYLOAD.health && PAYLOAD.health.events)
+    ? 'automatic or manual not recorded' : compactSplit.join(' · ');
+  // The median is read from turn_duration records, which Claude Code has stopped
+  // writing: too few of them, or none for the latest stretch of the range, and it
+  // says so instead of standing in for all turns.
+  const MIN_TURNS = 10;
+  const medTurn = turns.length >= MIN_TURNS ? median([...turns].sort((a, b) => a - b)) : null;
+  const turnDays = fr.filter(r => r[2] === 'turn').map(r => dayOf(r[0])).sort();
+  const lastTurnDay = turnDays.length ? turnDays[turnDays.length - 1] : null;
+  const rangeEnd = (PAYLOAD.summary && PAYLOAD.summary.date_max && PAYLOAD.summary.date_max < state.to)
+    ? PAYLOAD.summary.date_max : state.to;
+  const staleDays = lastTurnDay && rangeEnd ? (new Date(rangeEnd) - new Date(lastTurnDay)) / 86400000 : 0;
+  const turnSub = !turns.length ? 'no turn durations recorded'
+    : medTurn == null ? `only ${fmtInt(turns.length)} turn${turns.length === 1 ? '' : 's'} recorded`
+    : `from ${fmtInt(turns.length)} turns · ${fmtInt(longTurns)} over 10 min` +
+      (staleDays > 7 ? ` · none after ${new Date(lastTurnDay + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : '');
   renderTiles('limitTiles', [
     ['Limit hits', fmtInt(eps.length), eps.length ? eps.map(e => LIMIT_LABELS[e.kind] || e.kind).join(', ') : 'none in range'],
     ['Locked out', fmtHours(lockouts.length ? lockedHours : 0),
      lockouts.length ? `${lockouts.length} lock-out${lockouts.length > 1 ? 's' : ''} until reset` : 'never locked out'],
     ['Extra usage (est.)', fmtCost(extra), 'after the weekly limit, list price'],
     ['API retries', fmtInt(retries), retries ? `${fmtDuration(retryMs)} waiting` : null],
-    ['Context compactions', fmtInt(compactions), 'context filled and was summarised'],
-    ['Median turn', medTurn == null ? '—' : fmtDuration(medTurn), `${fmtInt(longTurns)} over 10 min`],
+    ['Context compactions', fmtInt(compactions), compactions ? compactSub : 'none in range'],
+    ['Median turn', medTurn == null ? '—' : fmtDuration(medTurn), turnSub],
   ]);
 
   const wrap = document.getElementById('limitsTableWrap');
@@ -1153,16 +1215,34 @@ function renderAllowance() {
       (${esc(prettyDate(weekFrom))} &ndash; ${esc(prettyDate(weekTo))}) is outside the selected dates.</p>`;
     return;
   }
+  // The allowance is a rough estimate (one hit is one data point, and list-price
+  // dollars aren't a stable measure of it), so it is rounded, shown as a range
+  // where a completed week without a limit notice used more, and never as
+  // "on track". Older payloads have none of the range fields.
+  const roughUsd = n => n >= 1000 ? '$' + (n / 1000).toFixed(1) + 'k'
+    : n >= 100 ? '$' + (Math.round(n / 10) * 10).toLocaleString('en-US') : '$' + Math.round(n);
+  const roughPct = p => p < 0.01 ? 'under 1%' : Math.round(p * 100) + '%';
+  const low = a.allowance_est_usd, high = a.allowance_high_usd;
+  const ranged = !!(a.contradicted && high);
+  const estText = ranged ? `${roughUsd(low)}–${roughUsd(high)}` : roughUsd(low);
+  const shareText = ranged && a.used_pct_of_high != null
+    ? `${roughPct(a.used_pct_of_high)}–${roughPct(a.used_pct || 0)}` : roughPct(a.used_pct || 0);
   const pct = Math.min(a.used_pct || 0, 1);
-  const status = a.status === 'over' ? ['bad', 'Past the level the limit was hit at last time']
-    : a.status === 'on_pace_to_hit' ? ['warn', `On pace to hit the weekly limit around ${fmtWhen(a.projected_hit_at)}`]
-    : ['ok', 'On track to stay under the weekly limit'];
+  const status = a.status === 'over' ? ['bad', 'Past the usage level at which the weekly limit was hit before']
+    : a.status === 'on_pace_to_hit' ? ['warn', `At this pace the usage level of the last limit hit would be reached around ${fmtWhen(a.projected_hit_at)}`]
+    : ['ok', `About ${shareText} of the estimate used so far`];
+  const hits = a.weekly_hits || 1;
+  const shortDay = iso => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   el.innerHTML = `<div class="allowance">
     <div class="allowance-head"><span><strong>This limit week</strong> · ${esc(fmtWhen(a.week_start))} – ${esc(fmtWhen(a.week_end))}</span>
-      <span>${fmtCost(a.used_usd)} of ~${fmtCost(a.allowance_est_usd)} · <strong>${fmtPct(a.used_pct)}</strong></span></div>
+      <span>about ${esc(roughUsd(a.used_usd))} used of a rough ${ranged ? 'range of ' : 'estimate of ~'}${esc(estText)}</span></div>
     <div class="meter ${status[0]}"><div style="width:${(pct * 100).toFixed(1)}%"></div></div>
-    <div class="allowance-foot ${status[0]}">${esc(status[1])}. The allowance is estimated from what Claude Code had
-      used when the weekly limit was last hit (${esc(fmtWhen(a.calibrated_from))}).</div></div>`;
+    <div class="allowance-foot ${status[0]}">${esc(status[1])}. This is a rough estimate, from ${hits} weekly-limit hit${hits === 1 ? '' : 's'}
+      (${esc(fmtWhen(a.calibrated_from))}): the list-price usage Claude Code had logged when the limit ran out.
+      ${ranged ? `A completed week without a limit notice (from ${esc(shortDay(a.high_week_start))}) used about ${esc(roughUsd(high))},
+      so the estimate is contradicted and the range runs up to that: list-price dollars are not a steady measure of the allowance
+      (the model mix changes what a request counts for). ` : ''}Week boundaries keep the reset's clock time across daylight-saving changes,
+      taken from this machine's time zone.</div></div>`;
 }
 
 // The CLI's model names are normalized the way claude_usage/pricing.py's
@@ -1202,9 +1282,10 @@ function reconciliationRows() {
   }).forEach(s => {
     (s.cli_models || []).filter(m => !selected.size || selected.has(normalizeModel(m.model))).forEach(m => {
       const acc = byModel[m.model] = byModel[m.model] ||
-        { model: m.model, est_cost: 0, est_tokens: 0, cli_cost: 0, cli_tokens: 0, sessions: 0 };
+        { model: m.model, est_cost: 0, est_tokens: 0, cli_cost: 0, cli_tokens: 0, cli_repriced: 0, sessions: 0 };
       acc.est_cost += m.est_cost; acc.est_tokens += m.est_tokens;
       acc.cli_cost += m.cli_cost; acc.cli_tokens += m.cli_tokens;
+      acc.cli_repriced += m.cli_repriced || 0;
       acc.sessions += 1 + (s.cli_counter_shared_with || []).length;
     });
   });
@@ -1223,27 +1304,37 @@ function renderReconciliation() {
       per-model usage, so there is nothing to reconcile against.</p>`;
     return;
   }
-  const body = rec.map(r => {
-    const gap = r.cli_cost > 0 ? (r.est_cost - r.cli_cost) / r.cli_cost : null;
+  // Δ as a share of the second figure; blank when there is nothing to divide by.
+  const delta = (a, b) => {
+    const gap = b > 0 ? (a - b) / b : null;
     const cls = gap == null ? '' : Math.abs(gap) <= 0.05 ? 'ok' : Math.abs(gap) <= 0.25 ? 'warn' : 'bad';
-    return `<tr><td>${esc(r.model)}</td><td class="num">${fmtCost(r.est_cost)}</td>
-      <td class="num">${fmtCost(r.cli_cost)}</td>
-      <td class="num ${cls}">${gap==null ? '—' : (gap>0?'+':'') + (gap*100).toFixed(1) + '%'}</td>
-      <td class="num">${fmtTokens(r.est_tokens)}</td><td class="num">${fmtTokens(r.cli_tokens)}</td>
-      <td class="num">${esc(r.sessions)}</td></tr>`;
-  }).join('');
+    return `<td class="num ${cls}">${gap == null ? '—' : (gap > 0 ? '+' : '') + (gap * 100).toFixed(1) + '%'}</td>`;
+  };
+  const body = rec.map(r => `<tr><td>${esc(r.model)}</td>
+      <td class="num">${fmtTokens(r.est_tokens)}</td><td class="num">${fmtTokens(r.cli_tokens)}</td>${delta(r.est_tokens, r.cli_tokens)}
+      <td class="num">${fmtCost(r.est_cost)}</td><td class="num">${fmtCost(r.cli_cost)}</td>${delta(r.est_cost, r.cli_cost)}
+      <td class="num">${fmtCost(r.cli_repriced)}</td>${delta(r.cli_repriced, r.cli_cost)}
+      <td class="num">${esc(r.sessions)}</td></tr>`).join('');
   el.innerHTML = `<div class="table-scroll"><table class="data-table"><thead><tr>
-      <th>Model</th><th class="num">Estimated</th><th class="num">CLI reported</th><th class="num">Δ</th>
-      <th class="num">Est tokens</th><th class="num">CLI tokens</th><th class="num">Sessions</th>
+      <th rowspan="2">Model</th><th class="num" colspan="3">Tokens</th><th class="num" colspan="3">Cost</th>
+      <th class="num" colspan="2">Rate check</th><th class="num" rowspan="2">Sessions</th></tr><tr>
+      <th class="num">Logged here</th><th class="num">Claude Code counted</th><th class="num">Δ</th>
+      <th class="num">Logged here</th><th class="num">Claude Code's $</th><th class="num">Δ</th>
+      <th class="num">Its tokens at list price</th><th class="num">Δ vs its $</th>
     </tr></thead><tbody>${body}</tbody></table></div>
-    <p class="foot-note">Covers only the sessions that recorded per-model <code>cost-state</code> usage, and only
-    those that started and ended inside the selected dates (the CLI's counter can't be split by day).
-    A close match validates the rate table; a large positive Δ is expected on long sessions, because the
-    CLI's counter restarts from zero each time a session is resumed and so under-reports the total. A
-    branched or resumed transcript that carries on its parent's counter is counted once, together with
-    the parent, rather than once per transcript. The
-    CLI reports the 1M-context mode as a separate <code>[1m]</code> model — it is folded into the base
-    model here, since both bill at the same published rates.</p>`;
+    <p class="foot-note"><strong>Logged here</strong> is what the transcripts hold, priced at the list rates, for
+    the requests Claude Code's counter could have seen: from the counter's start to its last snapshot.
+    <strong>Claude Code counted</strong> and <strong>Claude Code's $</strong> are the counter's own tokens and
+    dollars. <strong>Its tokens at list price</strong> prices the counter's tokens at the published rates (the
+    counter doesn't split its cache writes into 5-minute and 1-hour, so they take the transcripts' own split). A positive token or cost Δ means the transcripts hold
+    calls the counter didn't, for instance a counter that restarted on resume in a build before 2.1.277. A
+    negative one means the counter saw calls no transcript holds; those are priced separately as “not in
+    transcripts”. A Δ in the last column means Claude Code charges a rate other than the published one (it
+    prices Sonnet 5.5 cache reads at $0.20/MTok against the published $0.10), or, for Haiku 5.5, that some
+    calls were over its 100,000-token prompt line, which summed tokens can't show; only that column tests
+    the rate table. Only sessions that started and ended inside the selected dates count
+    (a counter can't be split by day). A transcript carrying on its parent's counter is counted once, with the
+    parent. The 1M-context <code>[1m]</code> model is folded into the base model.</p>`;
 }
 
 function renderTimeChart(rows) {
@@ -1535,20 +1626,36 @@ function renderTools() {
       plugins:{ legend:{display:false} } },
   });
 
-  const errorRateEntries = Object.entries(byTool).filter(([,v])=>v.calls>=10)
-    .map(([name,v]) => [name, v.errors/v.calls, v.calls])
-    .sort((a,b)=>b[1]-a[1]);
+  // Ranked by errors, not by rate: a rarely-called tool that failed a few
+  // times can't outrank the one behind most of the failures. The bar is the
+  // error count, coloured by rate. Built-in names the model made up (never once
+  // succeeded) are left out and named below; see inventedTool in habits.js.
+  const withErrors = Object.entries(byTool).filter(([,v]) => v.calls >= 10 && v.errors > 0);
+  const invented = withErrors.filter(([name,v]) => inventedTool(name, v));
+  const errorEntries = withErrors.filter(([name,v]) => !inventedTool(name, v))
+    .map(([name,v]) => [name, v.errors, v.calls, v.errors/v.calls])
+    .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0, 15);
+  const allErrors = Object.values(byTool).reduce((s,v) => s + v.errors, 0);
   upsertChart('toolErrorRate', 'toolErrorRateChart', {
     type: 'bar',
-    data: { labels: errorRateEntries.map(e=>e[0]), datasets: [{
-      data: errorRateEntries.map(e=>e[1]*100),
-      backgroundColor: errorRateEntries.map(e => e[1] >= 0.15 ? cssVar('--critical') : e[1] >= 0.05 ? cssVar('--warning') : cssVar('--good')),
+    data: { labels: errorEntries.map(e=>e[0]), datasets: [{
+      data: errorEntries.map(e=>e[1]),
+      backgroundColor: errorEntries.map(e => e[3] >= 0.15 ? cssVar('--critical') : e[3] >= 0.05 ? cssVar('--warning') : cssVar('--good')),
     }] },
     options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
-      scales: { x:{ min:0, max:100, ticks:{color:cssVar('--text-muted'), callback:v=>v+'%'}, grid:{color:cssVar('--gridline')} },
+      scales: { x:{ min:0, ticks:{color:cssVar('--text-muted')}, grid:{color:cssVar('--gridline')} },
                 y:{ ticks:{color:cssVar('--text-secondary'),font:{size:11}}, grid:{display:false} } },
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => `${ctx.raw.toFixed(1)}% (n=${errorRateEntries[ctx.dataIndex][2]})` } } } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => {
+        const [, errors, calls, rate] = errorEntries[ctx.dataIndex];
+        return `${fmtInt(errors)} errors of ${fmtInt(calls)} calls (${(rate*100).toFixed(1)}%)` +
+               (allErrors ? ` · ${(100*errors/allErrors).toFixed(1)}% of all errors` : '');
+      } } } } },
   });
+  const note = document.getElementById('toolErrorNote');
+  if (note) note.textContent = invented.length
+    ? `Left out: ${invented.map(([name,v]) => `${name} (${fmtInt(v.calls)} calls, none succeeded)`).join(', ')}, ` +
+      `a tool name the model made up rather than a tool to fix.`
+    : '';
 
   const byServer = {};
   Object.entries(byTool).forEach(([name,v]) => {
@@ -1788,13 +1895,15 @@ function renderSessionsTable(rows) {
           return `<tr><td>${esc(m.model)}</td><td class="num">${fmtCost(m.est_cost)}</td>` +
                  `<td class="num">${fmtCost(m.cli_cost)}</td>` +
                  `<td class="num">${gap==null ? '—' : (gap>0?'+':'') + (gap*100).toFixed(1) + '%'}</td>` +
+                 `<td class="num">${m.cli_repriced == null ? '—' : fmtCost(m.cli_repriced)}</td>` +
                  `<td class="num">${fmtTokens(m.est_tokens)}</td><td class="num">${fmtTokens(m.cli_tokens)}</td></tr>`;
         }).join('');
-        detail += `<div style="margin-top:8px;"><strong>Estimate vs the CLI's own per-model accounting</strong>` +
-          ` <span class="foot-note">(the CLI counter restarts on resume, so it under-reports long sessions)</span>` +
-          `<table class="data-table mini"><thead><tr><th>Model</th><th class="num">Est</th>` +
-          `<th class="num">CLI</th><th class="num">Δ</th><th class="num">Est tok</th>` +
-          `<th class="num">CLI tok</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        detail += `<div style="margin-top:8px;"><strong>Logged here vs Claude Code's own counter</strong>` +
+          ` <span class="foot-note">(both over the counter's window, from its start to its last snapshot; ` +
+          `"its tokens at list price" re-prices the counter's own tokens at this tool's rates)</span>` +
+          `<table class="data-table mini"><thead><tr><th>Model</th><th class="num">Logged here</th>` +
+          `<th class="num">Claude Code's $</th><th class="num">Δ</th><th class="num">Its tokens at list price</th>` +
+          `<th class="num">Logged tok</th><th class="num">Counted tok</th></tr></thead><tbody>${rows}</tbody></table></div>`;
       }
       const row = document.createElement('tr');
       row.className = 'expand-row';

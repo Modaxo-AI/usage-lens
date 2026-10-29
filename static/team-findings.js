@@ -52,6 +52,10 @@ function integrationLabel(integration, tool) {
   return UUID_RE.test(integration || '') ? `MCP connector (${integration.slice(0, 8)}…)` : `${integration} (MCP)`;
 }
 function isClaudeCodeTool(integration, tool) { return integration === 'built-in' && CLAUDE_CODE_TOOLS.has(tool); }
+// A built-in tool name that never once succeeded is one the model made up (a
+// lowercase `bash`): no such tool exists, so nothing can be fixed. An MCP tool
+// that never succeeded is a broken integration, and is kept.
+function inventedTool(integration, t) { return integration === 'built-in' && t.calls > 0 && t.errors >= t.calls; }
 
 // Keyed accumulators hold names from other people's files, so they have no
 // prototype: a repo, person or tool called "toString" or "__proto__" is an
@@ -478,13 +482,15 @@ function findings(input, today) {
   // Friction table.
   const tools = dict();
   (input.tools || []).forEach(([, , tool, integration, calls, errors]) => {
-    if (integration === 'built-in') return;
+    if (integration === 'built-in') return;  // (so no invented built-in names either)
     const key = integrationLabel(integration, tool);
     const t = tools[key] || (tools[key] = { calls: 0, errors: 0 });
     t.calls += calls; t.errors += errors;
   });
+  // Most errors first: the finding a manager reads first is the integration
+  // behind the most failures, not a small one with a high rate.
   Object.entries(tools).filter(([, t]) => t.calls >= FINDING.minCalls && t.errors / t.calls >= FINDING.errorRate)
-    .sort((a, b) => b[1].errors / b[1].calls - a[1].errors / a[1].calls)
+    .sort((a, b) => b[1].errors - a[1].errors || a[0].localeCompare(b[0]))
     .forEach(([key, t]) => out.push({ rule: 'integration', tab: 'habits',
       text: `${key} fails ${Math.round(t.errors / t.calls * 100)}% of the time (${t.errors} of ${t.calls} calls).` }));
 

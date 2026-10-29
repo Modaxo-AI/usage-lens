@@ -118,8 +118,9 @@ This is what the team view's *Friction by integration* table is built from.
 
 ### Imputed output and unlogged cost (schema 9)
 
-Since Claude Code 2.1.284, most subagent responses reach the transcript with
-only a placeholder output count (2–20 tokens), never the final one. From
+From Claude Code 2.1.284 until 2.1.307 fixed it, most subagent responses
+reached the transcript with only a placeholder output count (2–20 tokens),
+never the final one. From
 schema 9:
 
 | Column | Sheets | What it is |
@@ -336,7 +337,7 @@ every row of one export:
 |---|---|
 | `claude_account_email` | **Join to the seat roster.** This is the Claude account, so it matches the admin console; `person_email` is git's address and often a personal or noreply one |
 | `seat_tier`, `rate_limit_tier`, `extra_usage_enabled` | Compare people on the same plan, and see who can run past their allowance |
-| `schema_version` | Refuse to stack files with different versions without checking. This release is **11** (11 added `week_active_days` to the summary sheet; 10 added `very_long_context_cost_usd` to the summary and sessions sheets; 9 added `output_tokens_imputed` and `est_cost_unlogged_usd`, and imputed subagent output now counts in `output_tokens` and `est_cost_*`; 8 added `bucket_zone` and moved every day and week to the export zone; 7 added the usage-health columns and the tools file; 6 added `machine_id`; 5 the PRs file and `pr_repos`; 4 the limits file and the friction and allowance columns; 3 the breakdown file; 2 these context columns); a file with no such column is 1 |
+| `schema_version` | Refuse to stack files with different versions without checking. This release is **12** (12 stopped counting transcripts that never got a reply in `sessions_started`; 11 added `week_active_days` to the summary sheet; 10 added `very_long_context_cost_usd` to the summary and sessions sheets; 9 added `output_tokens_imputed` and `est_cost_unlogged_usd`, and imputed subagent output now counts in `output_tokens` and `est_cost_*`; 8 added `bucket_zone` and moved every day and week to the export zone; 7 added the usage-health columns and the tools file; 6 added `machine_id`; 5 the PRs file and `pr_repos`; 4 the limits file and the friction and allowance columns; 3 the breakdown file; 2 these context columns); a file with no such column is 1 |
 | `exported_at`, `window_from`, `window_to` | Spot **overlapping exports** — two files from one person whose windows overlap will double-count the overlap. Keep the later one, or dedupe sessions on `claude_account_email` + `session_id` |
 | `bucket_zone` | The zone every date in the file was bucketed in: the [export zone](#the-export-zone) (`UTC` unless the team set one). Blank in files made before schema 8, which used the exporting machine's own zone. Last column on every sheet until schema 9, whose columns follow it on the summary, sessions and breakdown sheets; schema 10 appends `very_long_context_cost_usd` after those on the summary and sessions sheets, and schema 11 appends `week_active_days` after that on the summary sheet |
 | `timezone` | The UTC offset of the `bucket_zone` at export time. Every date is in that zone — including a session's `started_at` and `ended_at`, and the day a session is filtered and counted by; weeks start at Monday midnight there. The exceptions are the instants `hit_at`, `last_notice_at`, `resets_at`, `resumed_at`, `projected_limit_hit_at` and `allowance_week_start`, which are UTC timestamps whatever the zone. (Before schema 8 it was the exporter's own offset) |
@@ -486,11 +487,12 @@ Two attribution rules worth knowing:
 
 Export totals reconcile exactly with the dashboard — cost, tokens, requests,
 tool calls and PRs are asserted equal in `tests/test_export.py`. If one of those
-disagrees with the UI, that is a bug. The session count is the one that can
-differ, by design: the dashboard's session count leaves out transcripts with no
-requests (for example a prompt that never got a reply), while the export lists
-and counts every transcript that isn't a fork copy, so the export can be higher
-by that many.
+disagrees with the UI, that is a bug. A transcript with no requests (for example
+a prompt that never got a reply) isn't a session: the dashboard doesn't count
+it, and from schema 12 neither does `sessions_started`. The sessions sheet still
+lists it, with `requests` 0, so count sessions from `sessions_started`, not by
+counting rows. Files made before schema 12 counted it, so a team merge of older
+exports can read a session or two high.
 
 ---
 

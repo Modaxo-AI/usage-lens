@@ -21,17 +21,24 @@ from .pricing import rates_for
 # about $13 per developer per active day, under $30 for 90% of users.
 COSTS_DOC = "https://code.claude.com/docs/en/costs"
 BEST_PRACTICES_DOC = "https://code.claude.com/docs/en/best-practices"
+# Why a long context is worth keeping small: "recall decreases as tokens grow",
+# "a performance gradient rather than a hard cliff".
+CONTEXT_ENGINEERING_DOC = (
+    "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents")
 BENCHMARKS = {
     "cost_per_active_day": {"average": 13.0, "p90": 30.0, "source": COSTS_DOC},
 }
 
 # `/usage` flags a behaviour (long context, cache misses) once it accounts for
-# 10% or more of recent usage -- the same source as above.
+# 10% or more of recent usage -- the same source as above. The panel applies
+# that line to this tool's own measures of those habits, and says so: it is not
+# Anthropic's verdict on them.
 FLAG_SHARE = 0.10
 
-# "Long context" is a request carrying more than 200k tokens: the line
-# Anthropic's pricing drew for the long-context tier. Ours to tune, and labelled
-# as such in the panel. The other bands only split the long tail for display.
+# "Long context" is a request carrying more than 200k tokens. The line is ours,
+# and labelled as such in the panel: Anthropic's pricing has no tier at 200k
+# (Claude 4.6 and later include the 1M window at standard pricing). The other
+# bands only split the long tail for display.
 LONG_CONTEXT_TOKENS = 200_000
 CONTEXT_BANDS = (100_000, LONG_CONTEXT_TOKENS, 500_000)
 
@@ -448,7 +455,8 @@ def build(main_facts, sub_facts, derived_sessions, priced_winners, bucket, order
             "error_streak": ERROR_STREAK,
         },
         "benchmarks": BENCHMARKS,
-        "sources": {"costs": COSTS_DOC, "best_practices": BEST_PRACTICES_DOC},
+        "sources": {"costs": COSTS_DOC, "best_practices": BEST_PRACTICES_DOC,
+                    "context_engineering": CONTEXT_ENGINEERING_DOC},
         # [bucket, session_id, model, band, requests, cost]; main thread only.
         # band indexes the gaps between context_bands (0 = under the first).
         "context": [[b, sid, model, band, n, round(cost, 6)]
