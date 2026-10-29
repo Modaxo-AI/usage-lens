@@ -14,6 +14,11 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+# The tests only read the code. A pull request from a fork gets a read-only
+# token anyway; this keeps runs on main the same.
+permissions:
+  contents: read
+
 jobs:
   unittest:
     runs-on: ${{ matrix.os }}
@@ -32,13 +37,11 @@ jobs:
           # `encoding="utf-8"` passes everywhere else and then fails for every
           # Windows user on the first non-ASCII byte in a log. Testing only on
           # Linux is how that shipped, so this job is the one that matters.
-          #
-          # macOS is deliberately absent: it is what the tool is developed on,
-          # so it is exercised continuously anyway, and on a private repo a
-          # macOS minute bills at 10x a Linux one against the same quota that
-          # is making these jobs queue. Windows bills at 2x and is the platform
-          # nobody otherwise tests.
           - os: windows-latest
+            python-version: "3.13"
+          # Many people run the tool on a Mac, and macOS ships its own Python
+          # builds and file-system quirks.
+          - os: macos-latest
             python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
