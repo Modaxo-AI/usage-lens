@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from claude_usage import context as context_mod
 from claude_usage import export as export_mod
-from claude_usage import price_check
+from claude_usage import paths, price_check
 from claude_usage.sanitize import finite_json
 from claude_usage.scan import DEFAULT_ROOT, default_cache, scan
 
@@ -53,7 +53,8 @@ def _static_content_type(name: str) -> str:
 
 _cache_lock = threading.Lock()
 # Same cache file collect.py uses, so the two entry points warm each other.
-_cache = default_cache()
+# Made in main(), once --data-dir has been read.
+_cache = None
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -341,7 +342,15 @@ def main():
     parser.add_argument("--seat-prices", metavar="FILE",
                         help="with --team: seat price per tier, for value per seat "
                              "(default: a seat-prices.json in the team folder)")
+    parser.add_argument("--data-dir", metavar="DIR",
+                        help="where the tool keeps its cache and machine id "
+                             f"(default: {paths.DEFAULT_DATA_DIR}, or {paths.DATA_DIR_ENV})")
     args = parser.parse_args()
+
+    global _cache
+    if args.data_dir:
+        paths.set_data_dir(args.data_dir)
+    _cache = default_cache()
 
     if not args.team:
         # The export zone is read on every export click; a bad setting should

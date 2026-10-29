@@ -63,7 +63,7 @@ ids, which a test asserts), and each project folder's git `origin` remote,
 with any credentials embedded in the URL stripped before it is used.
 
 The export also carries a `machine_id`: a random id made the first time you
-export and kept in the tool's own `.cache` folder. It isn't derived from your
+export and kept in the tool's data folder (`~/.usage-lens`). It isn't derived from your
 hostname, hardware or anything else on the machine, so it identifies nothing
 beyond itself; it only lets a team merge tell your two machines apart.
 

@@ -12,7 +12,8 @@ collect.py so someone can add a dated row.
 Network behaviour, deliberately narrow:
 
 * one HTTPS GET to a public page, carrying nothing about your usage;
-* at most once a day -- the result is cached in ``.cache/price-check.json``;
+* at most once a day -- the result is cached in ``price-check.json`` in the
+  tool's data folder (see paths.py);
 * a short timeout, and any failure (offline, proxy, page changed) is reported
   as "couldn't check", never as "prices match", and never stops a run;
 * off entirely with ``--offline`` or ``CLAUDE_USAGE_OFFLINE=1``.
@@ -26,14 +27,15 @@ import os
 import re
 from pathlib import Path
 
-from . import pricing
+from . import paths, pricing
 from .sanitize import sid
 
 PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 TIMEOUT_SECONDS = 5
 CACHE_HOURS = 24
 FAILED_RETRY_HOURS = 1
-CACHE_FILE = Path(__file__).resolve().parent.parent / ".cache" / "price-check.json"
+# Tests point this elsewhere; None means the data folder.
+CACHE_FILE = None
 OFFLINE_ENV = "CLAUDE_USAGE_OFFLINE"
 
 # Published column header (lower-cased, prefix match) -> our rate field.
@@ -257,9 +259,13 @@ def _now():
     return _dt.datetime.now(_dt.timezone.utc)
 
 
+def _cache_file():
+    return Path(CACHE_FILE) if CACHE_FILE else paths.cache_dir() / "price-check.json"
+
+
 def load_cached():
     try:
-        with open(CACHE_FILE, encoding="utf-8") as fh:
+        with open(_cache_file(), encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
@@ -367,8 +373,9 @@ def check(used_models=(), force=False, now=None, fetcher=None, allow_fetch=True)
         except Exception as exc:  # offline, proxy, TLS, timeout...
             result.update(status="failed", error=f"couldn't reach the pricing page ({exc.__class__.__name__})")
         try:
-            CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(CACHE_FILE, "w", encoding="utf-8") as fh:
+            cache_file = _cache_file()
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as fh:
                 json.dump(result, fh)
         except OSError:
             pass

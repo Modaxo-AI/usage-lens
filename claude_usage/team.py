@@ -757,7 +757,7 @@ def _machine_groups(exports, keys):
     a machine by its sessions is merged with all of that person's exports, as
     every export was before machine ids existed. And one towards not losing
     work: exports with the same id that each have sessions on days both cover,
-    but none of each other's, are two machines' logs (the tool's .cache folder
+    but none of each other's, are two machines' logs (the tool's data folder
     was copied), so they add up rather than one replacing the other. A session
     the other export holds the continuation of (see `_continued`) doesn't count
     as one it lacks: resuming a session between two exports from one machine
@@ -805,9 +805,9 @@ def _machine_groups(exports, keys):
                 notes.append({"level": "warn", "message":
                     f"{person}: exports carrying the same machine id ({mid}) each have sessions on "
                     "days they all cover but none of each other's, so they were counted as "
-                    f"{len(homes)} machines and added together. The tool's .cache folder was "
-                    "probably copied between machines; deleting .cache/machine-id on all but one "
-                    "gives each its own id."})
+                    f"{len(homes)} machines and added together. The tool's data folder was "
+                    "probably copied between machines; deleting its machine-id file (in ~/.usage-lens "
+                    "unless CLAUDE_USAGE_DATA_DIR moves it) on all but one gives each its own id."})
         ids_in = defaultdict(set)
         for e in group:
             if e.machine_id:
@@ -830,7 +830,7 @@ def _machine_groups(exports, keys):
     for e in exports:
         members[find(id(e))].add(e.machine_id or "")
     labels = {id(e): "; ".join(sorted(m for m in members[find(id(e))] if m)) for e in exports}
-    # Machines that share an id (a copied .cache) still need labels of their own.
+    # Machines that share an id (a copied data folder) still need labels of their own.
     roots = defaultdict(list)
     for e in sorted(exports, key=lambda e: e.source):
         root = find(id(e))

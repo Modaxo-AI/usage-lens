@@ -5,6 +5,7 @@ import os
 import sys
 import time
 
+from . import paths
 from .aggregate import build_payload
 from .cache import FileCache
 from .context import history_coverage, now_in
@@ -12,10 +13,10 @@ from .parser import parse_file, parse_meta
 
 DEFAULT_ROOT = os.path.expanduser("~/.claude/projects")
 
-# Resolved against the repo, not the caller's cwd, so `collect.py` run from
+# In the data folder (paths.py), not the caller's cwd, so `collect.py` run from
 # anywhere shares one cache with `serve.py` instead of cold-starting every time.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_CACHE_PATH = os.path.join(_REPO_ROOT, ".cache", "parsed.json")
+# Tests point this elsewhere; None means the real location.
+DEFAULT_CACHE_PATH = None
 
 # Per-project sibling directories that are not session transcripts. These sit
 # *inside* a project folder (e.g. `<project>/memory/`), not beside it, so they
@@ -24,7 +25,7 @@ IGNORED_SUBDIRS = {"memory"}
 
 
 def default_cache() -> FileCache:
-    return FileCache(DEFAULT_CACHE_PATH)
+    return FileCache(DEFAULT_CACHE_PATH or str(paths.cache_dir() / "parsed.json"))
 
 
 def discover(root=DEFAULT_ROOT):

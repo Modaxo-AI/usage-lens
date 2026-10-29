@@ -22,7 +22,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from . import pricing
+from . import paths, pricing
 
 # Bumped whenever an export column or file is added, removed or changes
 # meaning. Files written before this column existed are schema 1; schema 2 added
@@ -201,15 +201,18 @@ def utc_offset(moment=None):
     return f"{raw[:3]}:{raw[3:]}"
 
 
-# Where this machine's id is kept: the tool's own cache folder, next to the
-# parse cache. Tests point this elsewhere; None means the real location.
+# Where this machine's id is kept: the tool's data folder (see paths.py).
+# Tests point this elsewhere; None means the real location.
 MACHINE_ID_FILE = None
+# Where versions before the data folder kept it, beside the code. Tests point
+# this elsewhere too.
+LEGACY_MACHINE_ID_FILE = None
 _MACHINE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
 def machine_id():
     """A random id for this machine, made on first export and kept in the
-    tool's cache folder, so the team merge can tell a person's second machine
+    tool's data folder, so the team merge can tell a person's second machine
     from a re-export of the same one.
 
     Random rather than derived: a hash of the hostname or a MAC address would
@@ -218,7 +221,7 @@ def machine_id():
     every export would make each re-export look like a new machine and double
     count, whereas a blank one merges exactly as before machine ids existed.
     """
-    path = Path(MACHINE_ID_FILE) if MACHINE_ID_FILE else REPO_ROOT / ".cache" / "machine-id"
+    path = Path(MACHINE_ID_FILE) if MACHINE_ID_FILE else paths.data_dir() / "machine-id"
     for _ in range(2):
         try:
             existing = path.read_text(encoding="utf-8").strip()
@@ -226,7 +229,9 @@ def machine_id():
             existing = None
         if existing and _MACHINE_ID_RE.match(existing):
             return existing
-        new = secrets.token_hex(6)
+        # A copy that kept its id beside the code keeps it here: a new id
+        # would make this machine's next export look like a second machine.
+        new = (_legacy_machine_id() if existing is None else None) or secrets.token_hex(6)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # "x" when there is no file, so a server and a CLI export starting
@@ -240,6 +245,16 @@ def machine_id():
         except OSError:
             return None
     return None
+
+
+def _legacy_machine_id():
+    path = (Path(LEGACY_MACHINE_ID_FILE) if LEGACY_MACHINE_ID_FILE
+            else paths.LEGACY_CACHE_DIR / "machine-id")
+    try:
+        old = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return old if _MACHINE_ID_RE.match(old) else None
 
 
 # --------------------------------------------------------------------------- #

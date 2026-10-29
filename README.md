@@ -45,7 +45,7 @@ click **Refresh**. The first run takes a few seconds to read your logs (about
 ```bash
 python3 serve.py --port 8765   # change the port
 python3 serve.py --no-open     # don't auto-launch a browser
-python3 collect.py --static    # a single standalone dashboard.html, no server
+python3 collect.py --static    # a single standalone dashboard.html, no server (in ~/.usage-lens)
 python3 collect.py --export    # the business-review CSVs (days and weeks in UTC)
 python3 collect.py --export --tz Europe/London   # ...or in the team's zone (or set CLAUDE_USAGE_EXPORT_TZ)
 
@@ -54,7 +54,9 @@ python3 serve.py --team ./exports      # team dashboard
 python3 collect.py --merge ./exports   # combined, de-duplicated CSVs
 ```
 
-Full flag reference: [Command line](docs/cli.md).
+The tool keeps its cache and machine id in `~/.usage-lens`, outside the code,
+so updating it loses nothing (`CLAUDE_USAGE_DATA_DIR` moves it). Full flag
+reference: [Command line](docs/cli.md).
 
 ## What you get
 

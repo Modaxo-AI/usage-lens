@@ -23,7 +23,8 @@
          ▼             ▼
      serve.py      collect.py
    (live server,   (CLI: writes
-    /api/data)      data.json / dashboard.html)
+    /api/data)      data.json / dashboard.html
+                    to ~/.usage-lens)
                 │
                 ▼
      static/{index.html,app.css,app.js} + chart.umd.min.js (vendored, no CDN)
@@ -100,6 +101,7 @@ claude_usage/
   parser.py           parses one transcript file into requests/tools/skills/session facts
   sanitize.py         coercions for fields read from files this tool doesn't control
   cache.py            per-file parse cache (JSON) keyed on (mtime, size)
+  paths.py            the data folder (~/.usage-lens) for the cache, machine id and outputs
   aggregate.py        dedupe, subagent linking, project naming, cost — builds the payload
   health.py           usage-health measures (context tax, cold-cache cost, checks, friction)
   limits.py           usage-limit episodes and the weekly allowance estimate

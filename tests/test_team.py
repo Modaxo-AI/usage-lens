@@ -1956,7 +1956,7 @@ class TestSeatActivity(unittest.TestCase):
 
 
 class TestCopiedMachineId(unittest.TestCase):
-    """Two machines that share a machine id because the tool's .cache folder
+    """Two machines that share a machine id because the tool's data folder
     was copied: their exports cover the same days but none of each other's
     sessions, so they are two machines, not a re-export."""
 
@@ -2058,7 +2058,7 @@ class TestResumeBetweenExportsIsOneMachine(unittest.TestCase):
         self.assertEqual(self._warns(m), [])
 
     def test_two_machines_on_a_copied_id_with_their_own_sessions_are_still_two(self):
-        # Same machine id (a copied .cache), sessions of their own on the same
+        # Same machine id (a copied data folder), sessions of their own on the same
         # days and no continuation relation between them.
         one = self._logs("one", {"aaaa": [_response("a0", _ts(5, day=2), inp=1_000_000)]})
         two = self._logs("two", {"bbbb": [_response("b0", _ts(9, day=2), inp=1_000_000)]})

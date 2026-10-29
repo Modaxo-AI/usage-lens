@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""CLI entry point: scan ~/.claude/projects and write data.json.
+"""CLI entry point: scan ~/.claude/projects and write data.json to the data
+folder (~/.usage-lens; see claude_usage/paths.py).
 
 With --static, also bakes the payload, the stylesheet and the charting library
 into a single self-contained dashboard.html that needs no server and no sibling
@@ -16,19 +17,21 @@ from datetime import date
 from pathlib import Path
 
 from claude_usage import context as context_mod
+from claude_usage import paths
 from claude_usage import export as export_mod
 from claude_usage import price_check
 from claude_usage.sanitize import finite_json
 from claude_usage.scan import DEFAULT_ROOT, scan
 
 HERE = Path(__file__).parent
-OUT_PATH = HERE / "data.json"
+# Both written to the data folder; tests point them elsewhere.
+OUT_PATH = None
 STATIC_DIR = HERE / "static"
 STATIC_TEMPLATE = STATIC_DIR / "index.html"
 APP_JS = STATIC_DIR / "app.js"
 APP_CSS = STATIC_DIR / "app.css"
 CHART_JS = STATIC_DIR / "chart.umd.min.js"
-DASHBOARD_PATH = HERE / "dashboard.html"
+DASHBOARD_PATH = None
 
 # Every <script src="static/..."> in index.html, in load order. Scripts other
 # than app.js are inlined verbatim; app.js additionally gets the data baked in.
@@ -142,6 +145,14 @@ def _stale_prices_message(prices: dict) -> str:
             f"Then set PRICES_CHECKED to the day you checked.")
 
 
+def _out_path() -> Path:
+    return Path(OUT_PATH) if OUT_PATH else paths.data_dir() / "data.json"
+
+
+def _dashboard_path() -> Path:
+    return Path(DASHBOARD_PATH) if DASHBOARD_PATH else paths.data_dir() / "dashboard.html"
+
+
 def _build_static(payload: dict) -> bool:
     """Inline the data, the CSS and Chart.js into one standalone HTML file.
 
@@ -154,6 +165,7 @@ def _build_static(payload: dict) -> bool:
         if not path.exists():
             print(f"{path} not found; skipping --static build")
             return False
+    out = _dashboard_path()
 
     data_json = _script_safe_json(payload)
     app_js = APP_JS.read_text(encoding="utf-8")
@@ -186,10 +198,11 @@ def _build_static(payload: dict) -> bool:
 
     for leftover in ('href="static/', 'src="static/'):
         if leftover in html:
-            print(f"WARNING: {DASHBOARD_PATH.name} still references {leftover}... — not fully standalone")
-    DASHBOARD_PATH.write_text(html, encoding="utf-8")
-    size_mb = DASHBOARD_PATH.stat().st_size / 1e6
-    print(f"Built standalone dashboard: {DASHBOARD_PATH} ({size_mb:.1f} MB, no other files needed)")
+            print(f"WARNING: {out.name} still references {leftover}... — not fully standalone")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    size_mb = out.stat().st_size / 1e6
+    print(f"Built standalone dashboard: {out} ({size_mb:.1f} MB, no other files needed)")
     return True
 
 
@@ -290,9 +303,14 @@ def main():
                         help="check the rate table against Anthropic's published prices now "
                              "(ignoring today's cached check); exit 1 if they differ or the "
                              "check fails")
+    parser.add_argument("--data-dir", metavar="DIR",
+                        help="where the tool keeps its cache, machine id, data.json and dashboard.html "
+                             f"(default: {paths.DEFAULT_DATA_DIR}, or {paths.DATA_DIR_ENV})")
     parser.add_argument("--offline", action="store_true",
                         help="make no network request at all (skips the daily price check)")
     args = parser.parse_args()
+    if args.data_dir:
+        paths.set_data_dir(args.data_dir)
     if args.offline:
         os.environ[price_check.OFFLINE_ENV] = "1"
     for flag in ("since", "until"):
@@ -319,7 +337,9 @@ def main():
     # Daily, cached, and only ever reported -- see claude_usage/price_check.py.
     checked = price_check.check(used_models=payload["dims"]["models"], force=args.check_prices)
     payload["price_check"] = checked
-    OUT_PATH.write_text(json.dumps(finite_json(payload), separators=(",", ":"), allow_nan=False),
+    out_path = _out_path()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(finite_json(payload), separators=(",", ":"), allow_nan=False),
                         encoding="utf-8")
     summary = payload["summary"]
     # The sessions an export lists: every transcript that is not a fork copy,
@@ -327,7 +347,7 @@ def main():
     listed = summary["total_transcripts"] - summary["derived_sessions"]
     print(f"Wrote {listed} sessions ({summary['total_sessions']} with requests, "
           f"+{summary['derived_sessions']} fork/resume copies), "
-          f"{summary['total_subagents']} subagents, {len(payload['usage'])} usage rows to {OUT_PATH} "
+          f"{summary['total_subagents']} subagents, {len(payload['usage'])} usage rows to {out_path} "
           f"({payload['files_parsed']} parsed, {payload['files_cached']} cached, {payload['scan_ms']}ms)")
     if payload["unknown_models"]:
         print(f"WARNING: no pricing for models: {', '.join(payload['unknown_models'])} "

@@ -3,6 +3,28 @@
 The dashboard has two entry points: `serve.py` for the live server and
 `collect.py` for everything that writes a file.
 
+## Where the tool keeps its files
+
+Everything the tool makes for itself goes in one data folder, `~/.usage-lens`,
+not beside the code:
+
+| File | What it is |
+|---|---|
+| `cache/parsed.json` | The parse cache, so a scan only re-reads changed logs |
+| `cache/price-check.json` | Today's price check, so it runs at most once a day |
+| `machine-id` | This machine's random id, for the [team merge](team.md#what-combining-handles-for-you) |
+| `data.json`, `dashboard.html` | What `collect.py` and `collect.py --static` write |
+
+Because the folder is outside the code, updating the tool, re-cloning it or
+installing it as a plugin keeps the same machine id and a warm cache. A copy
+older than the data folder kept its files in `.cache/` beside the code; the
+first run carries its machine id over, and the parse cache rebuilds itself in a
+few seconds. The old `.cache/` folder can then be deleted.
+
+To keep the folder somewhere else, set `CLAUDE_USAGE_DATA_DIR`, or pass
+`--data-dir DIR` to either command. Exports (`--export DIR`) and merges
+(`--out DIR`) still go where you point them.
+
 ## serve.py
 
 ```bash
@@ -12,6 +34,7 @@ python3 serve.py --no-open       # don't auto-launch a browser
 python3 serve.py --offline       # no network request at all (skips the daily price check)
 python3 serve.py --team DIR      # team dashboard over people's export zips
 python3 serve.py --team DIR --seat-prices prices.json   # ...with value per seat
+python3 serve.py --data-dir DIR  # keep the cache and machine id in DIR
 ```
 
 `--team` takes one or more files or folders of export zips/CSVs and serves the
@@ -71,8 +94,8 @@ which otherwise stays in this machine's zone.
 ## collect.py
 
 ```bash
-python3 collect.py               # writes data.json and nothing else
-python3 collect.py --static      # also builds a standalone dashboard.html
+python3 collect.py               # writes data.json (in the data folder) and nothing else
+python3 collect.py --static      # also builds a standalone dashboard.html there
 python3 collect.py --export DIR  # writes the business-review CSVs
 ```
 
@@ -88,6 +111,7 @@ python3 collect.py --export DIR  # writes the business-review CSVs
 | `--no-titles` | Leave session titles out of the export |
 | `--check-prices` | Check the rate table against Anthropic's published prices now (ignoring today's cached check); exit 1 if anything differs, the check couldn't run, the page was only partly understood, or a model in your logs isn't listed on the page (`unverified`). See [Cost estimates](cost.md#the-daily-price-check) |
 | `--offline` | Make no network request at all (skips the daily price check) |
+| `--data-dir DIR` | Where the tool keeps its files (default `~/.usage-lens`, or `CLAUDE_USAGE_DATA_DIR`). See [Where the tool keeps its files](#where-the-tool-keeps-its-files) |
 | `--merge PATH...` | Team mode: combine people's export zips/CSVs (files or folders) into de-duplicated team CSVs and a report, instead of reading your own logs. See [Team view](team.md) |
 | `--out DIR` | Where `--merge` writes (default `./team-merged`) |
 | `--seat-prices FILE` | Seat price per tier for value per seat (default: a `seat-prices.json` in the `--merge` folder). See [Value per seat](team.md#value-per-seat) |
@@ -98,7 +122,8 @@ python3 collect.py --export DIR  # writes the business-review CSVs
 python3 collect.py --static
 ```
 
-Writes a single self-contained `dashboard.html` — the data, the stylesheet and
+Writes a single self-contained `dashboard.html` to the data folder (the path
+is printed) — the data, the stylesheet and
 the charting library are all inlined, so it opens over `file://` with no server
 and no sibling files. If the build fails, `collect.py` exits with status 1.
 Add `--redact` before sharing it with anyone (see
