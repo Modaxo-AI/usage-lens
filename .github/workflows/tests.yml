@@ -20,11 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor the code actually supports; PEP 604 annotations are
-        # kept lazy (`from __future__ import annotations`) so they import there.
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
         include:
+          # 3.9 is the floor the code actually supports; PEP 604 annotations are
+          # kept lazy (`from __future__ import annotations`) so they import there.
+          # Pinned to 24.04: ubuntu-latest (26.04) has no Python 3.9 build.
+          - os: ubuntu-24.04
+            python-version: "3.9"
           # Windows defaults to cp1252 for text files, so a missing
           # `encoding="utf-8"` passes everywhere else and then fails for every
           # Windows user on the first non-ASCII byte in a log. Testing only on
